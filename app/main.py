@@ -1,6 +1,6 @@
 import socket  # noqa: F401
 import logging
-from app.async_TCP import run
+from app.async_TCP_redis_server import run
 import asyncio
 
 
