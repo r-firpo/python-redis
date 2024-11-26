@@ -129,7 +129,7 @@ class RedisServer:
                 if not command:
                     break
 
-                self.logger.info(f"Received from {peer_name}: {command}")
+                logger.info(f"Received from {peer_name}: {command}")
                 response = await self.process_command(command)
                 writer.write(response)
                 await writer.drain()
@@ -148,7 +148,15 @@ class RedisServer:
 
         try:
             if cmd == 'PING':
-                return self.protocol.encode_simple_string('PONG')
+                if len(args) > 1:
+                    return self.protocol.encode_error('wrong number of arguments for PING')
+                return (self.protocol.encode_bulk_string(args[0]) if args
+                        else self.protocol.encode_simple_string('PONG'))
+
+            elif cmd == 'ECHO':
+                if len(args) != 1:
+                    return self.protocol.encode_error('wrong number of arguments for ECHO')
+                return self.protocol.encode_bulk_string(args[0])
 
             elif cmd == 'SET':
                 if len(args) < 2:
