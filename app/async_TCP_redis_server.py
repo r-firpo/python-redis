@@ -189,6 +189,26 @@ class RedisServer:
                 success = self.data_store.delete(args[0])
                 return self.protocol.encode_integer(1 if success else 0)
 
+            elif cmd == 'KEYS':
+                if len(args) != 1:
+                    return self.protocol.encode_error('wrong number of arguments for KEYS command')
+
+                pattern = args[0]
+                if pattern != "*":
+                    return self.protocol.encode_error('only "*" pattern is supported')
+
+                # Get all keys from data store
+                keys = self.data_store.get_keys()
+
+                # Convert keys to bulk strings
+                key_strings = [
+                    self.protocol.encode_bulk_string(key)
+                    for key in keys
+                ]
+
+                # Return as array
+                return self.protocol.encode_array(key_strings)
+
             elif cmd == 'CONFIG':
                 if len(args) < 2:
                     return self.protocol.encode_error('wrong number of arguments for CONFIG command')

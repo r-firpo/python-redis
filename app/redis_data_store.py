@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import time, logging
 
 from app.redis_rdb_handler import RDBHandler
@@ -79,7 +79,8 @@ class RedisDataStore:
 
             if px is not None:
                 # Convert current time to milliseconds and add px
-                expire_at = int(time.time() * 1000) + px
+                current_time = int(time.time() * 1000)
+                expire_at = current_time + px
                 self.expires[key] = ExpirationInfo(expire_at=expire_at)
             elif key in self.expires:
                 # Remove any existing expiration
@@ -96,7 +97,9 @@ class RedisDataStore:
             if key in self.expires:
                 # Convert current time to milliseconds for comparison
                 current_time_ms = int(time.time() * 1000)
-                if current_time_ms >= self.expires[key].expire_at:
+                expire_at = self.expires[key].expire_at
+
+                if current_time_ms >= expire_at:
                     # Key has expired
                     self.data.pop(key, None)
                     self.expires.pop(key, None)
@@ -116,6 +119,23 @@ class RedisDataStore:
         if key in self.expires:
             del self.expires[key]
         return existed
+
+    def get_keys(self) -> List[str]:
+        """Get all non-expired keys"""
+        current_time_ms = int(time.time() * 1000)
+
+        # Filter out expired keys
+        valid_keys = []
+        for key in self.data.keys():
+            # Check if key has expiration
+            if key in self.expires:
+                if current_time_ms < self.expires[key].expire_at:
+                    valid_keys.append(key)
+            else:
+                valid_keys.append(key)
+
+        # Sort keys for consistent ordering
+        return sorted(valid_keys)
 
     async def cleanup_expired(self) -> None:
         """Periodically cleanup expired keys"""

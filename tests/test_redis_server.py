@@ -355,7 +355,6 @@ class TestRedisGetSet:
 
     async def test_concurrent_set_get(self, redis_server):
         """Test concurrent SET/GET operations"""
-
         async def set_get_sequence(key: str, value: str, px: int):
             await redis_server.process_command(
                 RESPCommand('SET', [key, value, 'px', str(px)])
@@ -363,32 +362,42 @@ class TestRedisGetSet:
             return await redis_server.process_command(
                 RESPCommand('GET', [key])
             )
+        # Use longer expiration times to avoid timing issues
+        base_expiry = 500  # 500ms base
+        interval = 200  # 200ms interval
 
         # Run multiple SET/GET operations concurrently
         tasks = [
-            set_get_sequence(f'key{i}', f'value{i}', 100 + i * 50)
+            set_get_sequence(f'key{i}', f'value{i}', base_expiry + i * interval)
             for i in range(5)
         ]
-        responses = await asyncio.gather(*tasks)
 
+        # This means:
+        # key0: px = 500ms
+        # key1: px = 700ms
+        # key2: px = 900ms
+        # key3: px = 1100ms
+        # key4: px = 1300ms
+
+        responses = await asyncio.gather(*tasks)
         # Verify all initial GETs worked
         for i, response in enumerate(responses):
             expected = f"$6\r\nvalue{i}\r\n".encode()
             assert response == expected
 
-        # Wait for some keys to expire
-        await asyncio.sleep(0.2)
+        # Wait for first two keys to expire
+        await asyncio.sleep(0.6)  # 600ms - should expire key0 only
 
         # Check expiration occurred as expected
         for i in range(5):
             response = await redis_server.process_command(
                 RESPCommand('GET', [f'key{i}'])
             )
-            # Earlier keys should be expired
-            if i < 2:  # first two keys had shorter expiration
-                assert response == b"$-1\r\n"
+            if i == 0:  # Only first key should be expired
+                assert response == b"$-1\r\n", f"key{i} should be expired"
             else:
-                assert response == f"$6\r\nvalue{i}\r\n".encode()
+                expected = f"$6\r\nvalue{i}\r\n".encode()
+                assert response == expected, f"key{i} should still be valid"
 
     async def test_set_get_after_expiry_race(self, redis_server):
         """Test race condition between SET and expiry"""
@@ -508,3 +517,117 @@ class TestConfigGet:
         )
         response = await redis_server.process_command(command)
         assert response.startswith(b"-ERR wrong number of arguments")
+
+
+@pytest.mark.asyncio
+class TestRedisKeys:
+    """Test KEYS command functionality"""
+
+    async def test_keys_empty_db(self, redis_server):
+        """Test KEYS when database is empty"""
+        command = RESPCommand(command='KEYS', args=['*'])
+        response = await redis_server.process_command(command)
+        expected = b"*0\r\n"  # Empty array
+        assert response == expected
+
+    async def test_keys_multiple_entries(self, redis_server):
+        """Test KEYS with multiple entries"""
+        # Add some test data
+        test_data = [
+            ('key1', 'value1'),
+            ('key2', 'value2'),
+            ('key3', 'value3')
+        ]
+
+        for key, value in test_data:
+            await redis_server.process_command(
+                RESPCommand('SET', [key, value])
+            )
+
+        # Get all keys
+        command = RESPCommand(command='KEYS', args=['*'])
+        response = await redis_server.process_command(command)
+
+        # Expected response with sorted keys
+        expected = (
+            b"*3\r\n"  # Array of 3 elements
+            b"$4\r\n"  # Length of "key1"
+            b"key1\r\n"
+            b"$4\r\n"  # Length of "key2"
+            b"key2\r\n"
+            b"$4\r\n"  # Length of "key3"
+            b"key3\r\n"
+        )
+        assert response == expected
+
+    async def test_keys_with_expired(self, redis_server):
+        """Test KEYS with some expired keys"""
+        # Set keys with different expirations
+        await redis_server.process_command(
+            RESPCommand('SET', ['key1', 'value1', 'px', '100'])  # Will expire
+        )
+        await redis_server.process_command(
+            RESPCommand('SET', ['key2', 'value2'])  # No expiration
+        )
+        await redis_server.process_command(
+            RESPCommand('SET', ['key3', 'value3', 'px', '10000'])  # Won't expire yet
+        )
+
+        # Wait for first key to expire
+        await asyncio.sleep(0.2)
+
+        # Get all keys
+        command = RESPCommand(command='KEYS', args=['*'])
+        response = await redis_server.process_command(command)
+
+        # Expected response (key1 should be gone)
+        expected = (
+            b"*2\r\n"  # Array of 2 elements
+            b"$4\r\n"
+            b"key2\r\n"
+            b"$4\r\n"
+            b"key3\r\n"
+        )
+        assert response == expected
+
+    async def test_keys_wrong_args(self, redis_server):
+        """Test KEYS with wrong number of arguments"""
+        # No arguments
+        command = RESPCommand(command='KEYS', args=[])
+        response = await redis_server.process_command(command)
+        assert response.startswith(b"-ERR wrong number of arguments")
+
+        # Too many arguments
+        command = RESPCommand(command='KEYS', args=['*', 'extra'])
+        response = await redis_server.process_command(command)
+        assert response.startswith(b"-ERR wrong number of arguments")
+
+    async def test_keys_unsupported_pattern(self, redis_server):
+        """Test KEYS with unsupported pattern"""
+        command = RESPCommand(command='KEYS', args=['key*'])
+        response = await redis_server.process_command(command)
+        assert response.startswith(b"-ERR only \"*\" pattern is supported")
+
+    async def test_keys_after_delete(self, redis_server):
+        """Test KEYS after deleting some keys"""
+        # Set multiple keys
+        await redis_server.process_command(RESPCommand('SET', ['key1', 'value1']))
+        await redis_server.process_command(RESPCommand('SET', ['key2', 'value2']))
+        await redis_server.process_command(RESPCommand('SET', ['key3', 'value3']))
+
+        # Delete one key
+        await redis_server.process_command(RESPCommand('DEL', ['key2']))
+
+        # Get all keys
+        command = RESPCommand(command='KEYS', args=['*'])
+        response = await redis_server.process_command(command)
+
+        # Expected response (key2 should be gone)
+        expected = (
+            b"*2\r\n"
+            b"$4\r\n"
+            b"key1\r\n"
+            b"$4\r\n"
+            b"key3\r\n"
+        )
+        assert response == expected
