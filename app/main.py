@@ -29,4 +29,5 @@ logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
     config = ServerConfig.from_args(sys.argv[1:])
+    logger.info(f"server config: {config}")
     asyncio.run(run(config=config))

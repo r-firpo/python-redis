@@ -12,7 +12,7 @@ class ServerConfig:
     monitoring_interval: int = 5
 
     # RDB configuration
-    dir: str = '/tmp/redis-files'  # default directory for RDB files
+    dir: str = '/tmp/redis-files-rdb'  # default directory for RDB files
     dbfilename: str = 'dump.rdb'  # default RDB filename
 
     @classmethod
