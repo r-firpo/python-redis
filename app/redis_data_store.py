@@ -2,6 +2,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 import time, logging
+
+from app.redis_rdb_handler import RDBHandler
 from app.utils.config import ServerConfig
 
 
@@ -18,10 +20,51 @@ class ExpirationInfo:
     """Stores expiration information for a key"""
     expire_at: float  # Unix timestamp in milliseconds when key expires
 class RedisDataStore:
-    def __init__(self):
+    def __init__(self, config: ServerConfig):
         self.data: Dict[str, Any] = {}
         self.expires: Dict[str, ExpirationInfo] = {}
+        self.config = config
+        self.rdb_handler = RDBHandler(config.dir, config.dbfilename)
+        # Load existing data if available
+        self._load_rdb()
+
+        # Start background tasks
         self.delete_task = asyncio.create_task(self.delete_task())
+        self.save_task = asyncio.create_task(self.periodic_save())
+
+    def _load_rdb(self):
+        """Load data from RDB file if it exists"""
+        result = self.rdb_handler.load()
+        if result:
+            data, expires_dict = result
+            self.data = data
+            self.expires = {
+                k: ExpirationInfo(expire_at=v)
+                for k, v in expires_dict.items()
+            }
+            logging.info(f"Loaded {len(self.data)} keys from RDB file")
+
+    async def periodic_save(self):
+        """Periodically save to RDB file"""
+        try:
+            while True:
+                await asyncio.sleep(60)  # Save every minute
+                self.save_to_rdb()
+        except asyncio.CancelledError:
+            # Final save before shutting down
+            self.save_to_rdb()
+            raise
+
+    def save_to_rdb(self) -> bool:
+        """Save current dataset to RDB file"""
+        expires_dict = {
+            k: v.expire_at
+            for k, v in self.expires.items()
+        }
+        success = self.rdb_handler.save(self.data, expires_dict)
+        if success:
+            logging.info(f"Saved {len(self.data)} keys to RDB file")
+        return success
 
 
 
@@ -85,7 +128,7 @@ class RedisDataStore:
         try:
             while True:
                 await self.cleanup_expired()
-                await asyncio.sleep(ServerConfig.monitoring_interval)
+                await asyncio.sleep(self.config.monitoring_interval)
         except asyncio.CancelledError:
             logger.info("Delete task stopped")
             raise

@@ -183,6 +183,20 @@ class RedisServer:
                 success = self.data_store.delete(args[0])
                 return self.protocol.encode_integer(1 if success else 0)
 
+            elif cmd == 'CONFIG':
+                if len(args) < 2:
+                    return self.protocol.encode_error('wrong number of arguments for CONFIG command')
+
+                if args[0].upper() == 'GET':
+                    param = args[1].lower()
+                    if param == 'dir':
+                        return self.protocol.encode_bulk_string(self.config.dir)
+                    elif param == 'dbfilename':
+                        return self.protocol.encode_bulk_string(self.config.dbfilename)
+                    else:
+                        return self.protocol.encode_bulk_string(None)  # Parameter not found
+                else:
+                    return self.protocol.encode_error(f'unknown CONFIG subcommand {args[0]}')
             else:
                 return self.protocol.encode_error(f'unknown command {cmd}')
 
@@ -209,8 +223,8 @@ class RedisServer:
 
 
 # Example usage
-async def run():
+async def run(config: Optional[ServerConfig] = None):
     # Create server with default dependencies
-    server = await RedisServer.create()
+    server = await RedisServer.create(config)
     async with server:
         await server.start()

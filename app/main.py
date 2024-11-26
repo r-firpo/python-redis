@@ -1,8 +1,11 @@
 import socket  # noqa: F401
 import logging
+import sys
+
 from app.async_TCP_redis_server import run
 import asyncio
 
+from app.utils.config import ServerConfig
 
 ### Setup logging
 logging.basicConfig(
@@ -25,4 +28,5 @@ logger = logging.getLogger(__name__)
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    config = ServerConfig.from_args(sys.argv[1:])
+    asyncio.run(run(config=config))
