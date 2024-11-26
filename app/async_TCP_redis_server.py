@@ -6,8 +6,8 @@ from typing import Optional, Type, Protocol
 from app.connection_manager import ConnectionManager, DefaultConnectionManager
 from app.redis_data_store import RedisDataStore
 from app.redis_parser import RESPCommand, RedisProtocolHandler, RESPParser
-from dataclasses import dataclass
 
+from app.utils.config import ServerConfig
 
 ### Setup logging
 logging.basicConfig(
@@ -17,14 +17,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# First, let's define protocols/interfaces for our dependencies
+# protocols/interfaces for our dependencies
 class DataStore(Protocol):
-    def set(self, key: str, value: str, ex: Optional[int] = None) -> bool: ...
+    def set(self, key: str, value: str, px: Optional[int] = None) -> bool: ...
 
     def get(self, key: str) -> Optional[str]: ...
 
     def delete(self, key: str) -> bool: ...
-
 
 class ProtocolHandler(Protocol):
     def encode_simple_string(self, s: str) -> bytes: ...
@@ -35,19 +34,8 @@ class ProtocolHandler(Protocol):
 
     def encode_bulk_string(self, s: Optional[str]) -> bytes: ...
 
-
 class Parser(Protocol):
     async def parse_stream(self, reader: asyncio.StreamReader) -> Optional[RESPCommand]: ...
-
-
-@dataclass
-class ServerConfig:
-    """Configuration for Redis Server"""
-    host: str = 'localhost'
-    port: int = 6379
-    backlog: int = 100
-    buffer_limit: int = 65536
-    monitoring_interval: int = 5
 
 
 class RedisServer:
@@ -161,13 +149,26 @@ class RedisServer:
             elif cmd == 'SET':
                 if len(args) < 2:
                     return self.protocol.encode_error('wrong number of arguments for SET')
-
                 key, value = args[0], args[1]
-                ex = None
-                if len(args) > 2 and args[2].upper() == 'EX' and len(args) > 3:
-                    ex = int(args[3])
+                px = None
 
-                self.data_store.set(key, value, ex)
+                # Parse options
+                i = 2
+                while i < len(args):
+                    option = args[i].upper()  # case doesn't matter
+                    if option == 'PX':
+                        if i + 1 >= len(args):
+                            return self.protocol.encode_error('value is required for PX option')
+                        try:
+                            px = int(args[i + 1])
+                            if px <= 0:
+                                return self.protocol.encode_error('PX value must be positive')
+                        except ValueError:
+                            return self.protocol.encode_error('value is not an integer or out of range')
+                        i += 2
+                    else:
+                        return self.protocol.encode_error(f'unknown option {option}')
+                self.data_store.set(key, value, px=px)
                 return self.protocol.encode_simple_string('OK')
 
             elif cmd == 'GET':
