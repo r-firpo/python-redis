@@ -66,8 +66,6 @@ class RedisDataStore:
             logging.info(f"Saved {len(self.data)} keys to RDB file")
         return success
 
-
-
     def set(self, key: str, value: str, px: Optional[int] = None) -> bool:
         """
         Set key to value with optional expiration in milliseconds
@@ -76,30 +74,38 @@ class RedisDataStore:
             value: The value to set
             px: Optional expiration time in milliseconds
         """
-        self.data[key] = value
+        try:
+            self.data[key] = value
 
-        if px is not None:
-            # Convert current time to milliseconds and add px
-            expire_at = (time.time() * 1000) + px
-            self.expires[key] = ExpirationInfo(expire_at=expire_at)
-        elif key in self.expires:
-            # Remove any existing expiration
-            del self.expires[key]
+            if px is not None:
+                # Convert current time to milliseconds and add px
+                expire_at = int(time.time() * 1000) + px
+                self.expires[key] = ExpirationInfo(expire_at=expire_at)
+            elif key in self.expires:
+                # Remove any existing expiration
+                del self.expires[key]
 
-        return True
+            return True
+        except Exception as e:
+            logging.error(f"Error in SET operation: {e}")
+            return False
 
     def get(self, key: str) -> Optional[str]:
         """Get value for key, considering expiration"""
-        if key in self.expires:
-            # Convert current time to milliseconds for comparison
-            current_time_ms = time.time() * 1000
-            if current_time_ms > self.expires[key].expire_at:
-                # Key has expired
-                del self.data[key]
-                del self.expires[key]
-                return None
+        try:
+            if key in self.expires:
+                # Convert current time to milliseconds for comparison
+                current_time_ms = int(time.time() * 1000)
+                if current_time_ms >= self.expires[key].expire_at:
+                    # Key has expired
+                    self.data.pop(key, None)
+                    self.expires.pop(key, None)
+                    return None
 
-        return self.data.get(key)
+            return self.data.get(key)
+        except Exception as e:
+            logging.error(f"Error in GET operation: {e}")
+            return None
 
     def delete(self, key: str) -> bool:
         """Delete a key and its expiration info if it exists"""

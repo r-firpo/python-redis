@@ -2,21 +2,8 @@ from typing import Optional
 
 import pytest
 import asyncio
-from app.redis_data_store import RedisDataStore
+from fixtures import test_config, data_store, temp_dir
 
-
-@pytest.fixture
-async def data_store():
-    """Fixture to create a fresh data store for each test"""
-    store = RedisDataStore()
-    yield store
-    # Cleanup
-    if store.delete_task and not store.delete_task.done():
-        store.delete_task.cancel()
-        try:
-            await store.delete_task
-        except asyncio.CancelledError:
-            pass
 
 
 class TestRedisDataStoreBasic:

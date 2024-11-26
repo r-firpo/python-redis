@@ -1,12 +1,16 @@
 import asyncio
+import tempfile
+from pathlib import Path
 
 import pytest
 from unittest.mock import AsyncMock, Mock
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, AsyncGenerator
 
 from app.async_TCP_redis_server import ServerConfig, RedisServer
 from app.redis_data_store import RedisDataStore
+from fixtures import test_config, data_store, temp_dir, redis_server
+
 
 # Mock Response Constants
 PONG_RESPONSE = b"+PONG\r\n"
@@ -49,13 +53,66 @@ class MockProtocolHandler:
         if s is None:
             return b"$-1\r\n"
         return f"${len(s)}\r\n{s}\r\n".encode()
-
-
-@pytest.fixture
-async def redis_data_store(scope="function"):
-    """Fixture to create a Redis server instance with mocks"""
-    data_store = RedisDataStore()
-    return data_store
+#
+# @pytest.fixture
+# def temp_dir():
+#     """Create a temporary directory for test data"""
+#     with tempfile.TemporaryDirectory() as tmpdirname:
+#         path = Path(tmpdirname)
+#         path.mkdir(exist_ok=True)
+#         yield str(path)
+#
+# @pytest.fixture
+# def test_config(temp_dir):
+#     """Create a test configuration with temporary directory"""
+#     return ServerConfig(
+#         dir=temp_dir,
+#         dbfilename="test.rdb",
+#         host="localhost",
+#         port=6379
+#     )
+#
+# @pytest.fixture
+# async def data_store(test_config) -> AsyncGenerator[RedisDataStore, None]:
+#     """Fixture to create a fresh data store for each test"""
+#     store = RedisDataStore(test_config)
+#     yield store
+#
+#     # Cleanup tasks
+#     tasks_to_cancel = []
+#     if store.delete_task and not store.delete_task.done():
+#         tasks_to_cancel.append(store.delete_task)
+#     if store.save_task and not store.save_task.done():
+#         tasks_to_cancel.append(store.save_task)
+#
+#     # Cancel all tasks
+#     for task in tasks_to_cancel:
+#         task.cancel()
+#
+#     # Wait for all tasks to complete
+#     if tasks_to_cancel:
+#         try:
+#             await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+#         except asyncio.CancelledError:
+#             pass
+# @pytest.fixture
+# async def redis_server(test_config) -> AsyncGenerator[RedisServer, None]:
+#     """Fixture to create a Redis server instance"""
+#     # Create server instance
+#     server = await RedisServer.create(config=test_config, data_store=data_store)
+#
+#     # Use async context manager to ensure proper setup
+#     async with server as srv:
+#         yield srv
+#
+#     # Additional cleanup if needed
+#     if hasattr(server, 'monitor_task') and server.monitor_task:
+#         if not server.monitor_task.done():
+#             server.monitor_task.cancel()
+#             try:
+#                 await server.monitor_task
+#             except asyncio.CancelledError:
+#                 pass
 
 
 @pytest.mark.asyncio
@@ -354,3 +411,101 @@ class TestRedisGetSet:
             RESPCommand('GET', ['key'])
         )
         assert response == b"$9\r\nnew_value\r\n"
+
+
+@pytest.mark.asyncio
+class TestConfigGet:
+    """Test CONFIG GET command functionality"""
+
+    @pytest.fixture
+    async def redis_server(self):
+        """Create Redis server with custom config"""
+        config = ServerConfig(
+            dir='/tmp/redis-files',
+            dbfilename='dump.rdb'
+        )
+        server = await RedisServer.create(config=config)
+        return server
+
+    async def test_config_get_dir(self, redis_server):
+        """Test CONFIG GET dir"""
+        command = RESPCommand(
+            command='CONFIG',
+            args=['GET', 'dir']
+        )
+        response = await redis_server.process_command(command)
+        expected = (
+            b"*2\r\n"  # Array of 2 elements
+            b"$3\r\n"  # First element length (dir)
+            b"dir\r\n"  # First element value
+            b"$16\r\n"  # Second element length (/tmp/redis-files)
+            b"/tmp/redis-files\r\n"  # Second element value
+        )
+        assert response == expected
+
+    async def test_config_get_dbfilename(self, redis_server):
+        """Test CONFIG GET dbfilename"""
+        command = RESPCommand(
+            command='CONFIG',
+            args=['GET', 'dbfilename']
+        )
+        response = await redis_server.process_command(command)
+        expected = (
+            b"*2\r\n"  # Array of 2 elements
+            b"$10\r\n"  # First element length (dbfilename is 10 chars)
+            b"dbfilename\r\n"  # First element value
+            b"$8\r\n"  # Second element length (dump.rdb)
+            b"dump.rdb\r\n"  # Second element value
+        )
+        assert response == expected
+
+    async def test_config_get_unknown_param(self, redis_server):
+        """Test CONFIG GET with unknown parameter"""
+        command = RESPCommand(
+            command='CONFIG',
+            args=['GET', 'unknown']
+        )
+        response = await redis_server.process_command(command)
+        expected = (
+            b"*2\r\n"  # Array of 2 elements
+            b"$7\r\n"  # First element length (unknown)
+            b"unknown\r\n"  # First element value
+            b"$-1\r\n"  # Second element (null bulk string)
+        )
+        assert response == expected
+
+    async def test_config_get_case_insensitive(self, redis_server):
+        """Test CONFIG GET is case insensitive"""
+        variants = ['DIR', 'dir', 'Dir', 'dIr']
+        for variant in variants:
+            command = RESPCommand(
+                command='CONFIG',
+                args=['GET', variant]
+            )
+            response = await redis_server.process_command(command)
+            expected = (
+                b"*2\r\n"
+                b"$3\r\n"
+                b"dir\r\n"
+                b"$16\r\n"
+                b"/tmp/redis-files\r\n"
+            )
+            assert response == expected
+
+    async def test_config_wrong_subcommand(self, redis_server):
+        """Test CONFIG with wrong subcommand"""
+        command = RESPCommand(
+            command='CONFIG',
+            args=['INVALID', 'dir']
+        )
+        response = await redis_server.process_command(command)
+        assert response.startswith(b"-ERR unknown CONFIG subcommand")
+
+    async def test_config_missing_args(self, redis_server):
+        """Test CONFIG with missing arguments"""
+        command = RESPCommand(
+            command='CONFIG',
+            args=[]
+        )
+        response = await redis_server.process_command(command)
+        assert response.startswith(b"-ERR wrong number of arguments")

@@ -115,3 +115,11 @@ class RedisProtocolHandler:
         if s is None:
             return b"$-1\r\n"
         return f"${len(s)}\r\n{s}\r\n".encode('utf-8')
+
+    @staticmethod
+    def encode_array(items: List[bytes]) -> bytes:
+        """Encode an array of RESP-encoded items"""
+        if items is None:
+            return b"*-1\r\n"
+        array_string = f"*{len(items)}\r\n".encode('utf-8')
+        return array_string + b"".join(items)

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from types import TracebackType
-from typing import Optional, Type, Protocol
+from typing import Optional, Type, Protocol, List
 
 from app.connection_manager import ConnectionManager, DefaultConnectionManager
 from app.redis_data_store import RedisDataStore
@@ -33,6 +33,8 @@ class ProtocolHandler(Protocol):
     def encode_integer(self, i: int) -> bytes: ...
 
     def encode_bulk_string(self, s: Optional[str]) -> bytes: ...
+
+    def encode_array(self, items: List[bytes]) -> bytes: ...
 
 class Parser(Protocol):
     async def parse_stream(self, reader: asyncio.StreamReader) -> Optional[RESPCommand]: ...
@@ -67,7 +69,7 @@ class RedisServer:
                      config: Optional[ServerConfig] = None) -> 'RedisServer':
         """Factory method to create a RedisServer instance with default or custom dependencies"""
         return cls(
-            data_store=data_store or RedisDataStore(),
+            data_store=data_store or RedisDataStore(config or ServerConfig()),
             protocol_handler=protocol_handler or RedisProtocolHandler(),
             parser=parser or RESPParser(),
             connection_manager=connection_manager or DefaultConnectionManager(),
@@ -151,7 +153,6 @@ class RedisServer:
                     return self.protocol.encode_error('wrong number of arguments for SET')
                 key, value = args[0], args[1]
                 px = None
-
                 # Parse options
                 i = 2
                 while i < len(args):
@@ -161,14 +162,19 @@ class RedisServer:
                             return self.protocol.encode_error('value is required for PX option')
                         try:
                             px = int(args[i + 1])
+                            # Validate PX value
                             if px <= 0:
                                 return self.protocol.encode_error('PX value must be positive')
+                            if px > 999999999999999:  # Maximum reasonable milliseconds
+                                return self.protocol.encode_error('PX value is too large')
                         except ValueError:
-                            return self.protocol.encode_error('value is not an integer or out of range')
+                            return self.protocol.encode_error('PX value must be an integer')
                         i += 2
                     else:
                         return self.protocol.encode_error(f'unknown option {option}')
-                self.data_store.set(key, value, px=px)
+                success = self.data_store.set(key, value, px=px)
+                if not success:
+                    return self.protocol.encode_error('operation failed')
                 return self.protocol.encode_simple_string('OK')
 
             elif cmd == 'GET':
@@ -186,15 +192,19 @@ class RedisServer:
             elif cmd == 'CONFIG':
                 if len(args) < 2:
                     return self.protocol.encode_error('wrong number of arguments for CONFIG command')
-
                 if args[0].upper() == 'GET':
                     param = args[1].lower()
+                    config_value = None
                     if param == 'dir':
-                        return self.protocol.encode_bulk_string(self.config.dir)
+                        config_value = self.config.dir
                     elif param == 'dbfilename':
-                        return self.protocol.encode_bulk_string(self.config.dbfilename)
-                    else:
-                        return self.protocol.encode_bulk_string(None)  # Parameter not found
+                        config_value = self.config.dbfilename
+                    # Create array response with parameter name and value
+                    return self.protocol.encode_array([
+                        self.protocol.encode_bulk_string(param),
+                        self.protocol.encode_bulk_string(
+                            config_value) if config_value else self.protocol.encode_bulk_string(None)
+                    ])
                 else:
                     return self.protocol.encode_error(f'unknown CONFIG subcommand {args[0]}')
             else:
