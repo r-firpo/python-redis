@@ -235,6 +235,6 @@ class RedisServer:
 # Example usage
 async def run(config: Optional[ServerConfig] = None):
     # Create server with default dependencies
-    server = await RedisServer.create(config)
+    server = await RedisServer.create(config=config)
     async with server:
         await server.start()

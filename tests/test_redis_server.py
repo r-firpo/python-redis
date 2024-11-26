@@ -369,7 +369,6 @@ class TestRedisGetSet:
             set_get_sequence(f'key{i}', f'value{i}', 100 + i * 50)
             for i in range(5)
         ]
-
         responses = await asyncio.gather(*tasks)
 
         # Verify all initial GETs worked
