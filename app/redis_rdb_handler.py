@@ -4,7 +4,6 @@ import time
 import logging
 from typing import Dict, Optional, BinaryIO, Tuple
 
-### Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(funcName)s:%(lineno)d - %(message)s',
@@ -12,16 +11,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 class RDBHandler:
     """Handles RDB file persistence for Redis compatible server"""
 
-    REDIS_RDB_VERSION = 6  # Using version 6 format
+    REDIS_RDB_VERSION = 11  # Updated to version 11
 
     # RDB file format constants
     REDIS_RDB_OPCODE_EOF = 255
     REDIS_RDB_OPCODE_SELECTDB = 254
     REDIS_RDB_OPCODE_EXPIRETIME_MS = 252
+    REDIS_RDB_OPCODE_AUX = 250  # New: for auxiliary fields
     REDIS_RDB_TYPE_STRING = 0
+    REDIS_RDB_TYPE_STRING_ENCODED = 251  # New: for encoded strings
 
     def __init__(self, dir_path: str, filename: str):
         self.dir_path = dir_path
@@ -41,6 +43,10 @@ class RDBHandler:
                 # Write header
                 self._write_header(f)
 
+                # Write aux fields (Redis version info)
+                self._write_aux_field(f, "redis-ver", "7.2.0")
+                self._write_aux_field(f, "redis-bits", "64")
+
                 # Write database selector (using 0 as default)
                 f.write(struct.pack('BB', self.REDIS_RDB_OPCODE_SELECTDB, 0))
 
@@ -56,12 +62,12 @@ class RDBHandler:
                         f.write(struct.pack('B', self.REDIS_RDB_OPCODE_EXPIRETIME_MS))
                         f.write(struct.pack('<Q', int(expires[key])))
 
-                    # Write type
-                    f.write(struct.pack('B', self.REDIS_RDB_TYPE_STRING))
+                    # Write type (using encoded string type for compatibility)
+                    f.write(struct.pack('B', self.REDIS_RDB_TYPE_STRING_ENCODED))
 
-                    # Write key-value
-                    self._write_string(f, key)
-                    self._write_string(f, value)
+                    # Write key-value with length encoding
+                    self._write_length_encoded_string(f, key)
+                    self._write_length_encoded_string(f, value)
 
                 # Write EOF marker
                 f.write(struct.pack('B', self.REDIS_RDB_OPCODE_EOF))
@@ -71,6 +77,45 @@ class RDBHandler:
         except Exception as e:
             logging.error(f"Error saving RDB file: {e}")
             return False
+
+    def _write_aux_field(self, f: BinaryIO, key: str, value: str) -> None:
+        """Write auxiliary field"""
+        f.write(struct.pack('B', self.REDIS_RDB_OPCODE_AUX))
+        self._write_length_encoded_string(f, key)
+        self._write_length_encoded_string(f, value)
+
+    def _write_length_encoded_string(self, f: BinaryIO, s: str) -> None:
+        """Write a length-encoded string"""
+        encoded = s.encode('utf-8')
+        length = len(encoded)
+
+        # Write length using the same encoding as Redis
+        if length < 64:
+            f.write(struct.pack('B', length))
+        elif length < 16384:
+            f.write(struct.pack('>H', length | 0x4000))
+        else:
+            f.write(struct.pack('B', 0x80))
+            f.write(struct.pack('>I', length)[1:])  # Write last 3 bytes
+
+        # Write the actual string
+        f.write(encoded)
+
+    def _read_length_encoded(self, f: BinaryIO) -> int:
+        """Read a length-encoded integer"""
+        first_byte = f.read(1)[0]
+        if (first_byte & 0xC0) == 0:  # Length is remaining 6 bits
+            return first_byte & 0x3F
+        elif (first_byte & 0xC0) == 0x40:  # Next byte also used
+            next_byte = f.read(1)[0]
+            return ((first_byte & 0x3F) << 8) | next_byte
+        elif (first_byte & 0xC0) == 0x80:  # Next 3 bytes used
+            length = 0
+            for _ in range(3):
+                length = (length << 8) | f.read(1)[0]
+            return length
+        else:  # 0xC0: Special format
+            return struct.unpack('>I', f.read(4))[0]
 
     def load(self) -> Optional[Tuple[Dict[str, str], Dict[str, float]]]:
         """
@@ -99,33 +144,37 @@ class RDBHandler:
                         break
                     elif type_byte == self.REDIS_RDB_OPCODE_SELECTDB:
                         # Skip database selector
-                        f.read(1)
+                        db_num = self._read_length_encoded(f)
+                        logging.info(f"Selected DB {db_num}")
+                    elif type_byte == self.REDIS_RDB_OPCODE_AUX:
+                        # Skip auxiliary fields
+                        key = self._read_length_encoded_string(f)
+                        value = self._read_length_encoded_string(f)
+                        logging.info(f"Aux field: {key}={value}")
                     elif type_byte == self.REDIS_RDB_OPCODE_EXPIRETIME_MS:
                         # Read expiry
                         expire_time = struct.unpack('<Q', f.read(8))[0]
+                        key_type = f.read(1)[0]
+                        if key_type not in (self.REDIS_RDB_TYPE_STRING, self.REDIS_RDB_TYPE_STRING_ENCODED):
+                            raise ValueError(f"Unexpected value type: {key_type}")
 
-                        # Read type byte for the actual value
-                        value_type = f.read(1)[0]
-                        if value_type != self.REDIS_RDB_TYPE_STRING:
-                            raise ValueError(f"Unexpected value type: {value_type}")
-
-                        # Read key-value
-                        key = self._read_string(f)
-                        value = self._read_string(f)
+                        key = self._read_length_encoded_string(f)
+                        value = self._read_length_encoded_string(f)
 
                         # Only add if not expired
                         current_time = int(time.time() * 1000)
                         if expire_time > current_time:
                             data[key] = value
                             expires[key] = expire_time
-                    elif type_byte == self.REDIS_RDB_TYPE_STRING:
+                    elif type_byte in (self.REDIS_RDB_TYPE_STRING, self.REDIS_RDB_TYPE_STRING_ENCODED):
                         # Regular key-value
-                        key = self._read_string(f)
-                        value = self._read_string(f)
+                        key = self._read_length_encoded_string(f)
+                        value = self._read_length_encoded_string(f)
                         data[key] = value
                     else:
                         raise ValueError(f"Unexpected RDB type byte: {type_byte}")
 
+                logging.info(f"Loaded {len(data)} keys from RDB file")
                 return data, expires
 
         except Exception as e:
@@ -145,17 +194,12 @@ class RDBHandler:
         version = f.read(4)
         try:
             version_num = int(version.decode())
+            # Accept any version up to our supported version
             return version_num <= self.REDIS_RDB_VERSION
         except (ValueError, UnicodeDecodeError):
             return False
 
-    def _write_string(self, f: BinaryIO, s: str) -> None:
-        """Write length prefixed string"""
-        encoded = s.encode('utf-8')
-        f.write(struct.pack('<I', len(encoded)))
-        f.write(encoded)
-
-    def _read_string(self, f: BinaryIO) -> str:
-        """Read length prefixed string"""
-        length = struct.unpack('<I', f.read(4))[0]
+    def _read_length_encoded_string(self, f: BinaryIO) -> str:
+        """Read a length-encoded string"""
+        length = self._read_length_encoded(f)
         return f.read(length).decode('utf-8')
