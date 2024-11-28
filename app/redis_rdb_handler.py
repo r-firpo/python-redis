@@ -171,7 +171,7 @@ class RDBHandler:
                                         raise ValueError(f"Invalid expiry marker: {expiry_bytes[0:2].hex()}")
 
                                     # Convert expiry timestamp (last 8 bytes)
-                                    expire_at = int.from_bytes(expiry_bytes[2:], byteorder='big')
+                                    expire_at = int.from_bytes(expiry_bytes[2:], byteorder='little') * 1000
 
                                     # Read key
                                     key_len = f.read(1)[0]
@@ -194,9 +194,10 @@ class RDBHandler:
                                     else:
                                         logging.info(f"Skipped expired key {key}")
                                         logging.info(f"Raw expiry bytes: {expiry_bytes[2:].hex()}")
-                                        expire_at = int.from_bytes(expiry_bytes[2:], byteorder='big')
                                         logging.info(
-                                            f"Parsed timestamp: {expire_at}, as datetime: {datetime.fromtimestamp(expire_at / 1000)}")
+                                            f"Parsed timestamp (seconds): {expire_at}, as datetime: {datetime.fromtimestamp(expire_at/1000)}")
+                                        logging.info(
+                                            f"Parsed timestamp: {expire_at}, as datetime: {datetime.fromtimestamp(expire_at)}")
 
                                 except Exception as e:
                                     logging.error(f"Error processing entry {i}: {e}")
