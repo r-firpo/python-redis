@@ -171,7 +171,7 @@ class RDBHandler:
                                         raise ValueError(f"Invalid expiry marker: {expiry_bytes[0:2].hex()}")
 
                                     # Convert expiry timestamp (last 8 bytes)
-                                    expire_at = int.from_bytes(expiry_bytes[2:], byteorder='little')
+                                    expire_at = int.from_bytes(expiry_bytes[2:], byteorder='big')
 
                                     # Read key
                                     key_len = f.read(1)[0]
