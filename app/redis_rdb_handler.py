@@ -135,23 +135,36 @@ class RDBHandler:
                             aux_value = self._read_length_encoded_string(f)
                             logging.info(f"Aux field: {aux_key}={aux_value}")
                     elif type_byte == self.REDIS_RDB_TYPE_STRING_ENCODED:
-                        # Read the special length encoding field
-                        f.read(3)  # Skip three bytes after FB (01 00 00)
-                        key = self._read_length_encoded_string(f)
-                        value = self._read_length_encoded_string(f)
-                        data[key] = value
-                        logging.info(f"Loaded key: {key} with value: {value}")
+                        # Read number of key-value pairs
+                        count = struct.unpack('<I', f.read(3) + b'\x00')[0]
+                        logging.info(f"Reading {count} encoded key-value pairs")
+
+                        # Read all key-value pairs
+                        for _ in range(count):
+                            key = self._read_length_encoded_string(f)
+                            value = self._read_length_encoded_string(f)
+                            data[key] = value
+                            logging.info(f"Loaded key: {key} with value: {value}")
+
+                            # Check for NULL separator unless it's the last pair
+                            if _ < count - 1:
+                                separator = f.read(1)
+                                if separator != b'\x00':
+                                    raise ValueError(f"Expected NULL separator, got: {separator}")
                     elif type_byte == self.REDIS_RDB_OPCODE_EXPIRETIME_MS:
                         expire_time = struct.unpack('<Q', f.read(8))[0]
                         key_type = f.read(1)[0]
                         if key_type == self.REDIS_RDB_TYPE_STRING_ENCODED:
-                            f.read(3)  # Skip three bytes after FB
-                            key = self._read_length_encoded_string(f)
-                            value = self._read_length_encoded_string(f)
-                            current_time = int(time.time() * 1000)
-                            if expire_time > current_time:
-                                data[key] = value
-                                expires[key] = expire_time
+                            count = struct.unpack('<I', f.read(3) + b'\x00')[0]
+                            for _ in range(count):
+                                key = self._read_length_encoded_string(f)
+                                value = self._read_length_encoded_string(f)
+                                current_time = int(time.time() * 1000)
+                                if expire_time > current_time:
+                                    data[key] = value
+                                    expires[key] = expire_time
+                                if _ < count - 1:
+                                    f.read(1)  # Skip NULL separator
                     else:
                         raise ValueError(f"Unexpected RDB type byte: {type_byte}")
 
