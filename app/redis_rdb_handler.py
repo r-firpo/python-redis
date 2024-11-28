@@ -168,6 +168,7 @@ class RDBHandler:
                                     # Check for expiry marker
                                     marker = f.read(1)[0]
                                     if marker == self.REDIS_RDB_OPCODE_EXPIRETIME_MS:  # 0xFC
+                                        logger.info(f"Found MS expirary marker: {marker}")
                                         # Read 8-byte timestamp
                                         expire_at = int.from_bytes(f.read(8), byteorder='little')
 
