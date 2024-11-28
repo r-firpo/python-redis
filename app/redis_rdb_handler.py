@@ -142,49 +142,62 @@ class RDBHandler:
                     elif type_byte == self.REDIS_RDB_OPCODE_AUX:
                         aux_key = self._read_length_encoded_string(f)
                         if aux_key == "redis-bits":
-                            f.read(2)  # Skip redis-bits value (c0 40)
+                            f.read(2)  # Skip redis-bits value
                         else:
                             aux_value = self._read_length_encoded_string(f)
                             logging.info(f"Aux field: {aux_key}={aux_value}")
                     elif type_byte == self.REDIS_RDB_TYPE_STRING_ENCODED:
-                        # Read count and initial marker
-                        count = f.read(2)[0]  # Only use first byte
-                        logging.info(f"Reading {count} entries")
+                        # Read count
+                        count = f.read(2)[0]  # First byte is count
+                        logging.info(f"Found {count} entries")
 
-                        # Process each entry
+                        # Handle each key-value pair
                         for _ in range(count):
-                            if _ > 0:
-                                # Read expiry marker for subsequent entries
-                                marker = f.read(2)  # fc 00
+                            try:
+                                # All pairs start with expiry marker and timestamp
+                                f.read(2)  # Skip fc 00
+                                exp_bytes = f.read(9)  # Read full expiry timestamp
+                                expire_at = int.from_bytes(exp_bytes[1:9], 'little')
 
-                            # Read expiry timestamp
-                            exp_bytes = f.read(9)  # 0c 28 8a c7 01 00 00 00 00
-                            expire_at = int.from_bytes(exp_bytes[1:9], byteorder='little')
+                                # Log position before reading strings
+                                pos_before = f.tell()
+                                logging.info(f"Position before reading strings: {pos_before}")
 
-                            # Read key
-                            key_len = f.read(1)[0]
-                            key = f.read(key_len).decode('utf-8')
+                                # Read key using length encoding
+                                key_len = f.read(1)[0]
+                                key = f.read(key_len).decode('utf-8')
+                                logging.info(f"Read key: {key} (length {key_len})")
 
-                            # Read value
-                            value_len = f.read(1)[0]
-                            value = f.read(value_len).decode('utf-8')
+                                # Read value using length encoding
+                                value_len = f.read(1)[0]
+                                value = f.read(value_len).decode('utf-8')
+                                logging.info(f"Read value: {value} (length {value_len})")
 
-                            # Only store if not expired
-                            current_time = int(time.time() * 1000)
-                            if expire_at > current_time:
-                                data[key] = value
-                                expires[key] = expire_at
+                                # Store if not expired
+                                current_time = int(time.time() * 1000)
+                                if expire_at > current_time:
+                                    data[key] = value
+                                    expires[key] = expire_at
 
-                            logging.info(f"Loaded key: {key} with value: {value}")
-                    else:
-                        raise ValueError(f"Unexpected RDB type byte: {type_byte}")
+                            except Exception as e:
+                                logging.error(f"Error reading pair {_}: {e}")
+                                # Log the next few bytes to see what we're dealing with
+                                next_bytes = f.read(16)
+                                logging.error(f"Next bytes: {next_bytes.hex()}")
+                                raise
 
-                logging.info(f"Loaded {len(data)} keys from RDB file")
-                return data, expires
+                    logging.info(f"Data loaded: {data}")
+                    return data, expires
 
         except Exception as e:
             logging.error(f"Error loading RDB file: {e}")
             return None
+
+    def _read_length_encoded_string(self, f: BinaryIO) -> str:
+        """Read a length-encoded string"""
+        length = f.read(1)[0]
+        logging.info(f"Reading string of length {length}")
+        return f.read(length).decode('utf-8')
 
     def _verify_header(self, f: BinaryIO) -> bool:
         """Verify RDB file header"""
@@ -214,10 +227,6 @@ class RDBHandler:
         else:
             return struct.unpack('>I', f.read(4))[0]
 
-    def _read_length_encoded_string(self, f: BinaryIO) -> str:
-        """Read a length-encoded string"""
-        length = self._read_length_encoded(f)
-        return f.read(length).decode('utf-8')
 
     def _write_header(self, f: BinaryIO) -> None:
         """Write RDB file header"""
