@@ -188,11 +188,6 @@ class RDBHandler:
             logging.error(f"Failed to decode string at position {f.tell()}: {e}")
             raise
 
-    def _write_header(self, f: BinaryIO) -> None:
-        """Write RDB file header"""
-        f.write(b'REDIS')
-        f.write(str(self.REDIS_RDB_VERSION).zfill(4).encode())
-
     def _verify_header(self, f: BinaryIO) -> bool:
         """Verify RDB file header"""
         magic = f.read(5)
@@ -206,7 +201,7 @@ class RDBHandler:
         except (ValueError, UnicodeDecodeError):
             return False
 
-    def _read_length_encoded_string(self, f: BinaryIO) -> str:
-        """Read a length-encoded string"""
-        length = self._read_length_encoded(f)
-        return f.read(length).decode('utf-8')
+    def _write_header(self, f: BinaryIO) -> None:
+        """Write RDB file header"""
+        f.write(b'REDIS')
+        f.write(str(self.REDIS_RDB_VERSION).zfill(4).encode())
