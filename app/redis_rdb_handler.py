@@ -168,25 +168,32 @@ class RDBHandler:
                                     # Check for expiry marker
                                     marker = f.read(1)[0]
                                     if marker == self.REDIS_RDB_OPCODE_EXPIRETIME_MS:  # 0xFC
-                                        logger.info(f"Found MS expirary marker: {marker}")
+                                        logger.info(f"Found MS expiry marker: {marker}")
                                         # Read 8-byte timestamp
                                         expire_at = int.from_bytes(f.read(8), byteorder='little')
 
+                                        # Read value type
+                                        value_type = f.read(1)[0]
+                                        if value_type != self.REDIS_RDB_TYPE_STRING:
+                                            raise ValueError(f"Unsupported value type: {value_type}")
+
                                         # Read key length and key
                                         key_len = f.read(1)[0]
-                                        key = f.read(key_len)
-
-                                        logger.info(f"Reading key_len {key_len} with key {key}")
-                                        key.decode('utf-8')
-                                        logger.info(f"decoded_key: {key}")
-
+                                        key = f.read(key_len).decode('utf-8')
+                                        logger.info(f"Read key: {key}")
 
                                         # Read value length and value
                                         value_len = f.read(1)[0]
                                         value = f.read(value_len).decode('utf-8')
+                                        logger.info(f"Read value: {value}")
                                     else:
-                                        # No expiry - marker was the key length
-                                        key_len = marker
+                                        # No expiry - marker was the value type
+                                        value_type = marker
+                                        if value_type != self.REDIS_RDB_TYPE_STRING:
+                                            raise ValueError(f"Unsupported value type: {value_type}")
+
+                                        # Read key length and key
+                                        key_len = f.read(1)[0]
                                         key = f.read(key_len).decode('utf-8')
 
                                         # Read value length and value
