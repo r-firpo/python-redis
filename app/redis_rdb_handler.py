@@ -173,7 +173,7 @@ class RDBHandler:
                             value_bytes = f.read(value_len)
                             value = value_bytes.decode('utf-8')
 
-                            current_time = int(time.time() * 1000)
+                            current_time = int(time.time())
                             logging.info(f"Key: {key}, Value: {value}, Expires: {expire_at}, Current: {current_time}")
 
                             # The timestamp in RDB is in milliseconds
