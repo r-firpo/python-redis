@@ -15,15 +15,15 @@ logger = logging.getLogger(__name__)
 class RDBHandler:
     """Handles RDB file persistence for Redis compatible server"""
 
-    REDIS_RDB_VERSION = 11  # Updated to version 11
+    REDIS_RDB_VERSION = 11
 
     # RDB file format constants
     REDIS_RDB_OPCODE_EOF = 255
     REDIS_RDB_OPCODE_SELECTDB = 254
     REDIS_RDB_OPCODE_EXPIRETIME_MS = 252
-    REDIS_RDB_OPCODE_AUX = 250  # New: for auxiliary fields
+    REDIS_RDB_OPCODE_AUX = 250
     REDIS_RDB_TYPE_STRING = 0
-    REDIS_RDB_TYPE_STRING_ENCODED = 251  # New: for encoded strings
+    REDIS_RDB_TYPE_STRING_ENCODED = 251
 
     def __init__(self, dir_path: str, filename: str):
         self.dir_path = dir_path
@@ -104,24 +104,26 @@ class RDBHandler:
     def _read_length_encoded(self, f: BinaryIO) -> int:
         """Read a length-encoded integer"""
         first_byte = f.read(1)[0]
-        if (first_byte & 0xC0) == 0:  # Length is remaining 6 bits
+        if (first_byte & 0xC0) == 0:
             return first_byte & 0x3F
-        elif (first_byte & 0xC0) == 0x40:  # Next byte also used
+        elif (first_byte & 0xC0) == 0x40:
             next_byte = f.read(1)[0]
             return ((first_byte & 0x3F) << 8) | next_byte
-        elif (first_byte & 0xC0) == 0x80:  # Next 3 bytes used
+        elif (first_byte & 0xC0) == 0x80:
             length = 0
             for _ in range(3):
                 length = (length << 8) | f.read(1)[0]
             return length
-        else:  # 0xC0: Special format
-            return struct.unpack('>I', f.read(4))[0]
+        elif first_byte == 0xC0:
+            length = 0
+            for _ in range(4):
+                length = (length << 8) | f.read(1)[0]
+            return length
+        else:
+            raise ValueError(f"Invalid length encoding byte: {first_byte}")
 
     def load(self) -> Optional[Tuple[Dict[str, str], Dict[str, float]]]:
-        """
-        Load dataset from RDB file
-        Returns tuple of (data, expires) if successful, None if file doesn't exist or is invalid
-        """
+        """Load dataset from RDB file"""
         if not os.path.exists(self.full_path):
             return None
 
@@ -134,7 +136,6 @@ class RDBHandler:
                 expires = {}
 
                 while True:
-                    # Read type byte
                     type_byte = f.read(1)
                     if not type_byte:  # EOF
                         break
@@ -143,34 +144,31 @@ class RDBHandler:
                     if type_byte == self.REDIS_RDB_OPCODE_EOF:
                         break
                     elif type_byte == self.REDIS_RDB_OPCODE_SELECTDB:
-                        # Skip database selector
                         db_num = self._read_length_encoded(f)
                         logging.info(f"Selected DB {db_num}")
                     elif type_byte == self.REDIS_RDB_OPCODE_AUX:
-                        # Skip auxiliary fields
-                        key = self._read_length_encoded_string(f)
-                        value = self._read_length_encoded_string(f)
-                        logging.info(f"Aux field: {key}={value}")
-                    elif type_byte == self.REDIS_RDB_OPCODE_EXPIRETIME_MS:
-                        # Read expiry
-                        expire_time = struct.unpack('<Q', f.read(8))[0]
-                        key_type = f.read(1)[0]
-                        if key_type not in (self.REDIS_RDB_TYPE_STRING, self.REDIS_RDB_TYPE_STRING_ENCODED):
-                            raise ValueError(f"Unexpected value type: {key_type}")
-
-                        key = self._read_length_encoded_string(f)
-                        value = self._read_length_encoded_string(f)
-
-                        # Only add if not expired
-                        current_time = int(time.time() * 1000)
-                        if expire_time > current_time:
-                            data[key] = value
-                            expires[key] = expire_time
-                    elif type_byte in (self.REDIS_RDB_TYPE_STRING, self.REDIS_RDB_TYPE_STRING_ENCODED):
-                        # Regular key-value
+                        # For aux fields, need to read both key and value as length-encoded strings
+                        aux_key = self._read_length_encoded_string(f)
+                        if aux_key == "redis-bits":
+                            # Handle redis-bits specially - it's encoded as a 64-bit value
+                            f.read(2)  # Skip the encoding bytes (c0 40)
+                        else:
+                            aux_value = self._read_length_encoded_string(f)
+                            logging.info(f"Aux field: {aux_key}={aux_value}")
+                    elif type_byte == self.REDIS_RDB_TYPE_STRING_ENCODED:
                         key = self._read_length_encoded_string(f)
                         value = self._read_length_encoded_string(f)
                         data[key] = value
+                    elif type_byte == self.REDIS_RDB_OPCODE_EXPIRETIME_MS:
+                        expire_time = struct.unpack('<Q', f.read(8))[0]
+                        key_type = f.read(1)[0]
+                        if key_type == self.REDIS_RDB_TYPE_STRING_ENCODED:
+                            key = self._read_length_encoded_string(f)
+                            value = self._read_length_encoded_string(f)
+                            current_time = int(time.time() * 1000)
+                            if expire_time > current_time:
+                                data[key] = value
+                                expires[key] = expire_time
                     else:
                         raise ValueError(f"Unexpected RDB type byte: {type_byte}")
 
@@ -180,6 +178,15 @@ class RDBHandler:
         except Exception as e:
             logging.error(f"Error loading RDB file: {e}")
             return None
+
+    def _read_length_encoded_string(self, f: BinaryIO) -> str:
+        """Read a length-encoded string"""
+        try:
+            length = self._read_length_encoded(f)
+            return f.read(length).decode('utf-8')
+        except UnicodeDecodeError as e:
+            logging.error(f"Failed to decode string at position {f.tell()}: {e}")
+            raise
 
     def _write_header(self, f: BinaryIO) -> None:
         """Write RDB file header"""
