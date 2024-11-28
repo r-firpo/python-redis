@@ -43,14 +43,16 @@ class RDBHandler:
                 # Write aux fields
                 self._write_aux_field(f, "redis-ver", "7.2.0")
 
-                # Write redis-bits aux field with special encoding
-                f.write(struct.pack('B', self.REDIS_RDB_OPCODE_AUX))  # AUX marker
+                # Write redis-bits aux field
+                f.write(struct.pack('B', self.REDIS_RDB_OPCODE_AUX))
                 self._write_length_encoded_string(f, "redis-bits")
-                f.write(b'\xc0\x40')  # Special 64-bit encoding
+                f.write(b'\xc0\x40')
 
                 # Write database selector
-                f.write(struct.pack('B', self.REDIS_RDB_OPCODE_SELECTDB))
-                self._write_length_encoded(f, 0)  # DB 0
+                f.write(struct.pack('BB', self.REDIS_RDB_OPCODE_SELECTDB, 0))
+
+                # Write string encoded marker and count of pairs
+                f.write(struct.pack('BB', self.REDIS_RDB_TYPE_STRING_ENCODED, len(data)))
 
                 # Write key-value pairs
                 current_time = int(time.time() * 1000)
@@ -59,14 +61,15 @@ class RDBHandler:
                     if key in expires and expires[key] <= current_time:
                         continue
 
-                    # Write expiry if exists
+                    # Write expiration if exists
                     if key in expires:
-                        f.write(struct.pack('B', self.REDIS_RDB_OPCODE_EXPIRETIME_MS))
-                        f.write(struct.pack('<Q', int(expires[key])))
-
-                    # Write string value with encoding
-                    f.write(struct.pack('B', self.REDIS_RDB_TYPE_STRING_ENCODED))
-                    f.write(b'\x01\x00\x00')  # Special length encoding field
+                        # Write expiration marker and timestamp
+                        f.write(b'\xfc\x00')  # Expiration marker
+                        f.write(struct.pack('<Q', int(expires[key])))  # 8-byte timestamp
+                        f.write(b'\x00')  # Extra byte as seen in format
+                    else:
+                        # Write bytes indicating no expiration
+                        f.write(b'\x04\xfc')  # Non-expiring marker
 
                     # Write key and value
                     self._write_length_encoded_string(f, key)
@@ -75,14 +78,26 @@ class RDBHandler:
                 # Write EOF marker
                 f.write(struct.pack('B', self.REDIS_RDB_OPCODE_EOF))
 
-            return True
+                return True
 
         except Exception as e:
             logging.error(f"Error saving RDB file: {e}")
             return False
 
-    def _write_length_encoded(self, f: BinaryIO, length: int) -> None:
-        """Write a length-encoded integer"""
+
+    def _write_aux_field(self, f: BinaryIO, key: str, value: str) -> None:
+        """Write auxiliary field"""
+        f.write(struct.pack('B', self.REDIS_RDB_OPCODE_AUX))
+        self._write_length_encoded_string(f, key)
+        self._write_length_encoded_string(f, value)
+
+
+    def _write_length_encoded_string(self, f: BinaryIO, s: str) -> None:
+        """Write a length-encoded string"""
+        encoded = s.encode('utf-8')
+        length = len(encoded)
+
+        # Write length prefix
         if length < 64:
             f.write(struct.pack('B', length))
         elif length < 16384:
@@ -91,10 +106,7 @@ class RDBHandler:
             f.write(b'\x80')
             f.write(struct.pack('>I', length)[1:])  # Write last 3 bytes
 
-    def _write_length_encoded_string(self, f: BinaryIO, s: str) -> None:
-        """Write a length-encoded string"""
-        encoded = s.encode('utf-8')
-        self._write_length_encoded(f, len(encoded))
+        # Write string data
         f.write(encoded)
 
     def _write_aux_field(self, f: BinaryIO, key: str, value: str) -> None:
@@ -135,36 +147,35 @@ class RDBHandler:
                             aux_value = self._read_length_encoded_string(f)
                             logging.info(f"Aux field: {aux_key}={aux_value}")
                     elif type_byte == self.REDIS_RDB_TYPE_STRING_ENCODED:
-                        # Read number of key-value pairs
-                        count = struct.unpack('<I', f.read(3) + b'\x00')[0]
-                        logging.info(f"Reading {count} encoded key-value pairs")
+                        # Read the first byte as count
+                        count = f.read(1)[0]
+                        logging.info(f"Reading {count} entries")
 
-                        # Read all key-value pairs
+                        # Read each entry
                         for _ in range(count):
-                            key = self._read_length_encoded_string(f)
-                            value = self._read_length_encoded_string(f)
-                            data[key] = value
-                            logging.info(f"Loaded key: {key} with value: {value}")
+                            # Read expiration marker (2 bytes)
+                            exp_marker = f.read(2)
+                            if exp_marker != b'\x04\xfc':  # If not a standard marker
+                                # Read expiration timestamp (9 bytes)
+                                exp_data = f.read(9)
+                                expire_at = int.from_bytes(exp_data[1:9], 'little')
 
-                            # Check for NULL separator unless it's the last pair
-                            if _ < count - 1:
-                                separator = f.read(1)
-                                if separator != b'\x00':
-                                    raise ValueError(f"Expected NULL separator, got: {separator}")
-                    elif type_byte == self.REDIS_RDB_OPCODE_EXPIRETIME_MS:
-                        expire_time = struct.unpack('<Q', f.read(8))[0]
-                        key_type = f.read(1)[0]
-                        if key_type == self.REDIS_RDB_TYPE_STRING_ENCODED:
-                            count = struct.unpack('<I', f.read(3) + b'\x00')[0]
-                            for _ in range(count):
+                                # Read key and value
                                 key = self._read_length_encoded_string(f)
                                 value = self._read_length_encoded_string(f)
+
+                                # Store with expiration
                                 current_time = int(time.time() * 1000)
-                                if expire_time > current_time:
+                                if expire_at > current_time:
                                     data[key] = value
-                                    expires[key] = expire_time
-                                if _ < count - 1:
-                                    f.read(1)  # Skip NULL separator
+                                    expires[key] = expire_at
+                            else:
+                                # Read key and value without expiration
+                                key = self._read_length_encoded_string(f)
+                                value = self._read_length_encoded_string(f)
+                                data[key] = value
+
+                            logging.info(f"Loaded key: {key} with value: {value}")
                     else:
                         raise ValueError(f"Unexpected RDB type byte: {type_byte}")
 
@@ -200,7 +211,7 @@ class RDBHandler:
             for _ in range(3):
                 length = (length << 8) | f.read(1)[0]
             return length
-        else:  # 0xC0
+        else:
             return struct.unpack('>I', f.read(4))[0]
 
     def _read_length_encoded_string(self, f: BinaryIO) -> str:
