@@ -133,8 +133,10 @@ class RDBHandler:
                     if not type_byte:  # EOF
                         break
                     type_byte = type_byte[0]
+                    logging.info(f"Processing type byte: {type_byte}")
 
                     if type_byte == self.REDIS_RDB_OPCODE_EOF:
+                        logging.info("Found EOF marker")
                         break
                     elif type_byte == self.REDIS_RDB_OPCODE_SELECTDB:
                         db_num = self._read_length_encoded(f)
@@ -147,48 +149,52 @@ class RDBHandler:
                             aux_value = self._read_length_encoded_string(f)
                             logging.info(f"Aux field: {aux_key}={aux_value}")
                     elif type_byte == self.REDIS_RDB_TYPE_STRING_ENCODED:
-                        # Read count
-                        first_count_byte = f.read(1)[0]  # Get number of entries
-                        second_byte = f.read(1)[0]  # Read but ignore second byte
-                        logging.info(f"Reading {first_count_byte} entries")
+                        # Read the entry count and marker
+                        count = f.read(1)[0]  # First byte is count
+                        marker = f.read(1)[0]  # Second byte should match count
+                        logging.info(f"Reading {count} entries (marker: {marker})")
 
-                        # Process each key-value pair
                         current_time = int(time.time() * 1000)
+                        logging.info(f"Current time: {current_time}")
 
-                        for _ in range(first_count_byte):
-                            try:
-                                # Read expiry marker
-                                f.read(2)  # fc 00
-                                exp_bytes = f.read(9)
-                                expire_at = int.from_bytes(exp_bytes[1:9], byteorder='little')
+                        for i in range(count):
+                            # Read expiry marker
+                            exp_marker = f.read(2)  # Should be fc 00
+                            logging.info(f"Entry {i}: Expiry marker: {exp_marker.hex()}")
 
-                                # Read key length and key
-                                key_len = f.read(1)[0]
-                                key = f.read(key_len).decode('utf-8')
+                            # Read timestamp
+                            exp_bytes = f.read(9)  # Full timestamp bytes
+                            expire_at = int.from_bytes(exp_bytes[1:9], byteorder='little')
+                            logging.info(f"Entry {i}: Expires at: {expire_at}")
 
-                                # Read value length and value
-                                value_len = f.read(1)[0]
-                                value = f.read(value_len).decode('utf-8')
+                            # Read key
+                            key_len = f.read(1)[0]
+                            key = f.read(key_len).decode('utf-8')
+                            logging.info(f"Entry {i}: Key: {key} (len: {key_len})")
 
-                                logging.info(f"Read key-value: {key} = {value}")
+                            # Read value
+                            value_len = f.read(1)[0]
+                            value = f.read(value_len).decode('utf-8')
+                            logging.info(f"Entry {i}: Value: {value} (len: {value_len})")
 
-                                # Store if not expired
-                                if expire_at > current_time:
-                                    data[key] = value
-                                    expires[key] = expire_at
-                                    logging.info(f"Stored key: {key} with expiry: {expire_at}")
-                                else:
-                                    logging.info(f"Skipped expired key: {key}")
+                            # Store if not expired
+                            if expire_at > current_time:
+                                data[key] = value
+                                expires[key] = expire_at
+                                logging.info(f"Entry {i}: Stored {key}={value}")
+                            else:
+                                logging.info(f"Entry {i}: Skipped expired key {key}")
 
-                            except Exception as e:
-                                logging.error(f"Error processing pair {_}: {e}")
-                                raise
+                        logging.info(f"Processed all {count} entries")
+                    else:
+                        raise ValueError(f"Unexpected RDB type byte: {type_byte}")
 
-                    logging.info(f"Final loaded data: {data}")
-                    return data, expires
+            logging.info(f"Final loaded data: {data}")
+            return data, expires
 
         except Exception as e:
             logging.error(f"Error loading RDB file: {e}")
+            logging.error(f"Traceback:", exc_info=True)
             return None
 
     def _read_length_encoded_string(self, f: BinaryIO) -> str:
