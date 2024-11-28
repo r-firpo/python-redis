@@ -149,16 +149,21 @@ class RDBHandler:
                     elif type_byte == self.REDIS_RDB_TYPE_STRING_ENCODED:
                         # Read the first byte as count
                         count = f.read(1)[0]
+                        next_byte = f.read(1)[0]  # Read the next byte
                         logging.info(f"Reading {count} entries")
 
                         # Read each entry
                         for _ in range(count):
-                            # Read expiration marker (2 bytes)
-                            exp_marker = f.read(2)
-                            if exp_marker != b'\x04\xfc':  # If not a standard marker
-                                # Read expiration timestamp (9 bytes)
-                                exp_data = f.read(9)
-                                expire_at = int.from_bytes(exp_data[1:9], 'little')
+                            if _ > 0:  # For all entries after the first
+                                # Read expiration marker
+                                next_byte = f.read(1)[0]
+
+                            # Check for expiration marker
+                            if next_byte == 0xfc:
+                                # Read expiration data
+                                f.read(1)  # Skip 00 byte
+                                exp_data = f.read(9)  # Read full expiration timestamp
+                                expire_at = int.from_bytes(exp_data[1:9], 'little')  # Skip first byte
 
                                 # Read key and value
                                 key = self._read_length_encoded_string(f)
