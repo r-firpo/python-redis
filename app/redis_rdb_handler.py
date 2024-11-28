@@ -160,10 +160,8 @@ class RDBHandler:
                             if expiry_bytes[0:2] != b'\xfc\x00':
                                 raise ValueError(f"Invalid expiry marker: {expiry_bytes[0:2].hex()}")
 
-                            # Convert expiry timestamp (last 8 bytes of expiry_bytes)
-                            timestamp_ms = int.from_bytes(expiry_bytes[2:], byteorder='little')
-                            # Convert to Unix timestamp in milliseconds
-                            expire_at = timestamp_ms * 1000
+                            # Convert expiry timestamp (last 8 bytes)
+                            expire_at = int.from_bytes(expiry_bytes[2:], byteorder='little')
 
                             # Read key length and key
                             key_len = f.read(1)[0]
@@ -178,11 +176,10 @@ class RDBHandler:
                             current_time = int(time.time() * 1000)
                             logging.info(f"Key: {key}, Value: {value}, Expires: {expire_at}, Current: {current_time}")
 
-                            # Store based on expiry
-                            if expire_at <= 0 or expire_at > current_time:
+                            # The timestamp in RDB is in milliseconds
+                            if expire_at > current_time:
                                 data[key] = value
-                                if expire_at > 0:
-                                    expires[key] = expire_at
+                                expires[key] = expire_at
                                 logging.info(f"Stored key-value pair: {key}={value}")
                             else:
                                 logging.info(f"Skipped expired key: {key}")
