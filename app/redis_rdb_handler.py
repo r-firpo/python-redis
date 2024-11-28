@@ -147,38 +147,33 @@ class RDBHandler:
                             aux_value = self._read_length_encoded_string(f)
                             logging.info(f"Aux field: {aux_key}={aux_value}")
                     elif type_byte == self.REDIS_RDB_TYPE_STRING_ENCODED:
-                        # Read the first byte as count
-                        count = f.read(1)[0]
-                        next_byte = f.read(1)[0]  # Read the next byte
+                        # Read count and initial marker
+                        count = f.read(2)[0]  # Only use first byte
                         logging.info(f"Reading {count} entries")
 
-                        # Read each entry
+                        # Process each entry
                         for _ in range(count):
-                            if _ > 0:  # For all entries after the first
-                                # Read expiration marker
-                                next_byte = f.read(1)[0]
+                            if _ > 0:
+                                # Read expiry marker for subsequent entries
+                                marker = f.read(2)  # fc 00
 
-                            # Check for expiration marker
-                            if next_byte == 0xfc:
-                                # Read expiration data
-                                f.read(1)  # Skip 00 byte
-                                exp_data = f.read(9)  # Read full expiration timestamp
-                                expire_at = int.from_bytes(exp_data[1:9], 'little')  # Skip first byte
+                            # Read expiry timestamp
+                            exp_bytes = f.read(9)  # 0c 28 8a c7 01 00 00 00 00
+                            expire_at = int.from_bytes(exp_bytes[1:9], byteorder='little')
 
-                                # Read key and value
-                                key = self._read_length_encoded_string(f)
-                                value = self._read_length_encoded_string(f)
+                            # Read key
+                            key_len = f.read(1)[0]
+                            key = f.read(key_len).decode('utf-8')
 
-                                # Store with expiration
-                                current_time = int(time.time() * 1000)
-                                if expire_at > current_time:
-                                    data[key] = value
-                                    expires[key] = expire_at
-                            else:
-                                # Read key and value without expiration
-                                key = self._read_length_encoded_string(f)
-                                value = self._read_length_encoded_string(f)
+                            # Read value
+                            value_len = f.read(1)[0]
+                            value = f.read(value_len).decode('utf-8')
+
+                            # Only store if not expired
+                            current_time = int(time.time() * 1000)
+                            if expire_at > current_time:
                                 data[key] = value
+                                expires[key] = expire_at
 
                             logging.info(f"Loaded key: {key} with value: {value}")
                     else:
