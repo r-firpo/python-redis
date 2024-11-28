@@ -194,7 +194,7 @@ class RDBHandler:
                                     else:
                                         logging.info(f"Skipped expired key {key}")
                                         logging.info(f"Raw expiry bytes: {expiry_bytes[2:].hex()}")
-                                        expire_at = int.from_bytes(expiry_bytes[2:], byteorder='little')
+                                        expire_at = int.from_bytes(expiry_bytes[2:], byteorder='big')
                                         logging.info(
                                             f"Parsed timestamp: {expire_at}, as datetime: {datetime.fromtimestamp(expire_at / 1000)}")
 
