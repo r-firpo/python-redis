@@ -34,26 +34,28 @@ class RDBHandler:
         os.makedirs(dir_path, exist_ok=True)
 
     def save(self, data: Dict[str, str], expires: Dict[str, float]) -> bool:
-        """
-        Save the current dataset to RDB file
-        Returns True if successful, False otherwise
-        """
+        """Save the current dataset to RDB file"""
         try:
             with open(self.full_path, 'wb') as f:
                 # Write header
                 self._write_header(f)
 
-                # Write aux fields (Redis version info)
+                # Write aux fields
                 self._write_aux_field(f, "redis-ver", "7.2.0")
-                self._write_aux_field(f, "redis-bits", "64")
 
-                # Write database selector (using 0 as default)
-                f.write(struct.pack('BB', self.REDIS_RDB_OPCODE_SELECTDB, 0))
+                # Write redis-bits aux field with special encoding
+                f.write(struct.pack('B', self.REDIS_RDB_OPCODE_AUX))  # AUX marker
+                self._write_length_encoded_string(f, "redis-bits")
+                f.write(b'\xc0\x40')  # Special 64-bit encoding
+
+                # Write database selector
+                f.write(struct.pack('B', self.REDIS_RDB_OPCODE_SELECTDB))
+                self._write_length_encoded(f, 0)  # DB 0
 
                 # Write key-value pairs
                 current_time = int(time.time() * 1000)
                 for key, value in data.items():
-                    # Check if key has a valid non-expired timestamp
+                    # Skip expired keys
                     if key in expires and expires[key] <= current_time:
                         continue
 
@@ -62,10 +64,11 @@ class RDBHandler:
                         f.write(struct.pack('B', self.REDIS_RDB_OPCODE_EXPIRETIME_MS))
                         f.write(struct.pack('<Q', int(expires[key])))
 
-                    # Write type (using encoded string type for compatibility)
+                    # Write string value with encoding
                     f.write(struct.pack('B', self.REDIS_RDB_TYPE_STRING_ENCODED))
+                    f.write(b'\x01\x00\x00')  # Special length encoding field
 
-                    # Write key-value with length encoding
+                    # Write key and value
                     self._write_length_encoded_string(f, key)
                     self._write_length_encoded_string(f, value)
 
@@ -78,28 +81,27 @@ class RDBHandler:
             logging.error(f"Error saving RDB file: {e}")
             return False
 
-    def _write_aux_field(self, f: BinaryIO, key: str, value: str) -> None:
-        """Write auxiliary field"""
-        f.write(struct.pack('B', self.REDIS_RDB_OPCODE_AUX))
-        self._write_length_encoded_string(f, key)
-        self._write_length_encoded_string(f, value)
-
-    def _write_length_encoded_string(self, f: BinaryIO, s: str) -> None:
-        """Write a length-encoded string"""
-        encoded = s.encode('utf-8')
-        length = len(encoded)
-
-        # Write length using the same encoding as Redis
+    def _write_length_encoded(self, f: BinaryIO, length: int) -> None:
+        """Write a length-encoded integer"""
         if length < 64:
             f.write(struct.pack('B', length))
         elif length < 16384:
             f.write(struct.pack('>H', length | 0x4000))
         else:
-            f.write(struct.pack('B', 0x80))
+            f.write(b'\x80')
             f.write(struct.pack('>I', length)[1:])  # Write last 3 bytes
 
-        # Write the actual string
+    def _write_length_encoded_string(self, f: BinaryIO, s: str) -> None:
+        """Write a length-encoded string"""
+        encoded = s.encode('utf-8')
+        self._write_length_encoded(f, len(encoded))
         f.write(encoded)
+
+    def _write_aux_field(self, f: BinaryIO, key: str, value: str) -> None:
+        """Write auxiliary field"""
+        f.write(struct.pack('B', self.REDIS_RDB_OPCODE_AUX))
+        self._write_length_encoded_string(f, key)
+        self._write_length_encoded_string(f, value)
 
     def load(self) -> Optional[Tuple[Dict[str, str], Dict[str, float]]]:
         """Load dataset from RDB file"""
