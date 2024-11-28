@@ -186,6 +186,10 @@ class RDBHandler:
                                     current_time = int(time.time() * 1000)
                                     logging.info(
                                         f"Entry {i}: Key: {key}, Value: {value}, Expires: {expire_at}, Current: {current_time}")
+                                    logging.info(
+                                        f"Parsed EXPIRES AT (seconds): {expire_at}, as datetime: {datetime.fromtimestamp(expire_at / 1000)}")
+                                    logging.info(
+                                        f"Parsed EXPIRES AT: {expire_at}, as datetime: {datetime.fromtimestamp(expire_at)}")
 
                                     if current_time < expire_at:
                                         data[key] = value
