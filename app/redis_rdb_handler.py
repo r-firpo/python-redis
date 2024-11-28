@@ -148,45 +148,43 @@ class RDBHandler:
                             logging.info(f"Aux field: {aux_key}={aux_value}")
                     elif type_byte == self.REDIS_RDB_TYPE_STRING_ENCODED:
                         # Read count
-                        count = f.read(2)[0]  # First byte is count
-                        logging.info(f"Found {count} entries")
+                        first_count_byte = f.read(1)[0]  # Get number of entries
+                        second_byte = f.read(1)[0]  # Read but ignore second byte
+                        logging.info(f"Reading {first_count_byte} entries")
 
-                        # Handle each key-value pair
-                        for _ in range(count):
+                        # Process each key-value pair
+                        current_time = int(time.time() * 1000)
+
+                        for _ in range(first_count_byte):
                             try:
-                                # All pairs start with expiry marker and timestamp
-                                f.read(2)  # Skip fc 00
-                                exp_bytes = f.read(9)  # Read full expiry timestamp
-                                expire_at = int.from_bytes(exp_bytes[1:9], 'little')
+                                # Read expiry marker
+                                f.read(2)  # fc 00
+                                exp_bytes = f.read(9)
+                                expire_at = int.from_bytes(exp_bytes[1:9], byteorder='little')
 
-                                # Log position before reading strings
-                                pos_before = f.tell()
-                                logging.info(f"Position before reading strings: {pos_before}")
-
-                                # Read key using length encoding
+                                # Read key length and key
                                 key_len = f.read(1)[0]
                                 key = f.read(key_len).decode('utf-8')
-                                logging.info(f"Read key: {key} (length {key_len})")
 
-                                # Read value using length encoding
+                                # Read value length and value
                                 value_len = f.read(1)[0]
                                 value = f.read(value_len).decode('utf-8')
-                                logging.info(f"Read value: {value} (length {value_len})")
+
+                                logging.info(f"Read key-value: {key} = {value}")
 
                                 # Store if not expired
-                                current_time = int(time.time() * 1000)
                                 if expire_at > current_time:
                                     data[key] = value
                                     expires[key] = expire_at
+                                    logging.info(f"Stored key: {key} with expiry: {expire_at}")
+                                else:
+                                    logging.info(f"Skipped expired key: {key}")
 
                             except Exception as e:
-                                logging.error(f"Error reading pair {_}: {e}")
-                                # Log the next few bytes to see what we're dealing with
-                                next_bytes = f.read(16)
-                                logging.error(f"Next bytes: {next_bytes.hex()}")
+                                logging.error(f"Error processing pair {_}: {e}")
                                 raise
 
-                    logging.info(f"Data loaded: {data}")
+                    logging.info(f"Final loaded data: {data}")
                     return data, expires
 
         except Exception as e:
@@ -196,7 +194,6 @@ class RDBHandler:
     def _read_length_encoded_string(self, f: BinaryIO) -> str:
         """Read a length-encoded string"""
         length = f.read(1)[0]
-        logging.info(f"Reading string of length {length}")
         return f.read(length).decode('utf-8')
 
     def _verify_header(self, f: BinaryIO) -> bool:
