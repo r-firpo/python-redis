@@ -154,15 +154,16 @@ class RDBHandler:
                         logging.info(f"Reading {count} entries")
 
                         # Process each key-value pair
-                        current_time = int(time.time() * 1000)
                         for i in range(count):
                             # Read expiry marker and timestamp
                             expiry_bytes = f.read(10)  # fc 00 + 8 bytes timestamp
                             if expiry_bytes[0:2] != b'\xfc\x00':
                                 raise ValueError(f"Invalid expiry marker: {expiry_bytes[0:2].hex()}")
 
-                            # Convert expiry timestamp (last 8 bytes)
-                            expire_at = int.from_bytes(expiry_bytes[2:], byteorder='little')
+                            # Convert expiry timestamp (last 8 bytes of expiry_bytes)
+                            timestamp_ms = int.from_bytes(expiry_bytes[2:], byteorder='little')
+                            # Convert to Unix timestamp in milliseconds
+                            expire_at = timestamp_ms * 1000
 
                             # Read key length and key
                             key_len = f.read(1)[0]
@@ -174,12 +175,14 @@ class RDBHandler:
                             value_bytes = f.read(value_len)
                             value = value_bytes.decode('utf-8')
 
-                            logging.info(f"Read key-value pair: {key}={value}, expires at {expire_at}")
+                            current_time = int(time.time() * 1000)
+                            logging.info(f"Key: {key}, Value: {value}, Expires: {expire_at}, Current: {current_time}")
 
-                            # Store if not expired
-                            if expire_at > current_time:
+                            # Store based on expiry
+                            if expire_at <= 0 or expire_at > current_time:
                                 data[key] = value
-                                expires[key] = expire_at
+                                if expire_at > 0:
+                                    expires[key] = expire_at
                                 logging.info(f"Stored key-value pair: {key}={value}")
                             else:
                                 logging.info(f"Skipped expired key: {key}")
