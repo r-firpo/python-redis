@@ -160,54 +160,50 @@ class RDBHandler:
                                 try:
                                     # Read and log current position
                                     pos_before = f.tell()
-                                    next_bytes = f.read(2)
+                                    next_byte = f.read(1)
                                     logging.info(
-                                        f"Reading entry {i} at position {pos_before}, next bytes: {next_bytes.hex()}")
-                                    f.seek(pos_before)  # Go back to start of marker
+                                        f"Reading entry {i} at position {pos_before}, next byte: {next_byte.hex()}")
+                                    f.seek(pos_before)  # Go back to start
 
-                                    # Read expiry marker and timestamp
-                                    expiry_bytes = f.read(10)  # fc 00 + 8 bytes timestamp
-                                    if expiry_bytes[0:2] != b'\xfc\x00':
-                                        raise ValueError(f"Invalid expiry marker: {expiry_bytes[0:2].hex()}")
+                                    # Check for expiry marker
+                                    marker = f.read(1)[0]
+                                    if marker == self.REDIS_RDB_OPCODE_EXPIRETIME_MS:  # 0xFC
+                                        # Read 8-byte timestamp
+                                        expire_at = int.from_bytes(f.read(8), byteorder='little')
 
-                                    # Convert expiry timestamp (last 8 bytes)
-                                    expire_at = int.from_bytes(expiry_bytes[2:], byteorder='big')
+                                        # Read key length and key
+                                        key_len = f.read(1)[0]
+                                        key = f.read(key_len).decode('utf-8')
 
-                                    # Read key
-                                    key_len = f.read(1)[0]
-                                    key_bytes = f.read(key_len)
-                                    key = key_bytes.decode('utf-8')
+                                        # Read value length and value
+                                        value_len = f.read(1)[0]
+                                        value = f.read(value_len).decode('utf-8')
+                                    else:
+                                        # No expiry - marker was the key length
+                                        key_len = marker
+                                        key = f.read(key_len).decode('utf-8')
 
-                                    # Read value
-                                    value_len = f.read(1)[0]
-                                    value_bytes = f.read(value_len)
-                                    value = value_bytes.decode('utf-8')
+                                        # Read value length and value
+                                        value_len = f.read(1)[0]
+                                        value = f.read(value_len).decode('utf-8')
+                                        expire_at = None
 
                                     current_time = int(time.time())
                                     logging.info(
-                                        f"Entry {i}: Key: {key}, Value: {value}, Expires: {expire_at}, Current: {current_time}")
-                                    logging.info(
-                                        f"Parsed EXPIRES AT (seconds): {expire_at}, as datetime: {datetime.fromtimestamp(expire_at / 1000)}")
-                                    logging.info(
-                                        f"Parsed EXPIRES AT: {expire_at}, as datetime: {datetime.fromtimestamp(expire_at)}")
+                                        f"Entry {i}: Key: {key}, Value: {value}, " +
+                                        f"Expires: {expire_at}, Current: {current_time}"
+                                    )
 
-                                    if current_time < expire_at:
+                                    if expire_at is None or current_time < expire_at:
                                         data[key] = value
-                                        expires[key] = expire_at
+                                        if expire_at is not None:
+                                            expires[key] = expire_at
                                         logging.info(f"Stored key {key}")
                                     else:
                                         logging.info(f"Skipped expired key {key}")
-                                        logging.info(f"Raw expiry bytes: {expiry_bytes[2:].hex()}")
-                                        logging.info(
-                                            f"Parsed timestamp (seconds): {expire_at}, as datetime: {datetime.fromtimestamp(expire_at/1000)}")
-                                        logging.info(
-                                            f"Parsed timestamp: {expire_at}, as datetime: {datetime.fromtimestamp(expire_at)}")
 
                                 except Exception as e:
                                     logging.error(f"Error processing entry {i}: {e}")
-                                    # Read and log next few bytes to help debug
-                                    next_bytes = f.read(16)
-                                    logging.error(f"Next bytes at error: {next_bytes.hex()}")
                                     raise
 
                         except Exception as e:
