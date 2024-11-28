@@ -161,25 +161,25 @@ class RDBHandler:
                                 raise ValueError(f"Invalid expiry marker: {expiry_bytes[0:2].hex()}")
 
                             # Convert expiry timestamp (last 8 bytes)
-                            expire_at = int.from_bytes(expiry_bytes[2:], byteorder='little')
+                            expire_at_sec = int.from_bytes(expiry_bytes[2:], byteorder='little')
+                            expire_at_ms = expire_at_sec * 1000  # Convert to milliseconds
 
-                            # Read key length and key
+                            # Read key and value
                             key_len = f.read(1)[0]
                             key_bytes = f.read(key_len)
                             key = key_bytes.decode('utf-8')
 
-                            # Read value length and value
                             value_len = f.read(1)[0]
                             value_bytes = f.read(value_len)
                             value = value_bytes.decode('utf-8')
 
-                            current_time = int(time.time())
-                            logging.info(f"Key: {key}, Value: {value}, Expires: {expire_at}, Current: {current_time}")
+                            current_time = int(time.time() * 1000)  # Current time in milliseconds
+                            logging.info(
+                                f"Key: {key}, Value: {value}, Expires: {expire_at_ms}, Current: {current_time}")
 
-                            # The timestamp in RDB is in milliseconds
-                            if expire_at > current_time:
+                            if expire_at_ms > current_time:
                                 data[key] = value
-                                expires[key] = expire_at
+                                expires[key] = expire_at_ms  # Store in milliseconds for consistency
                                 logging.info(f"Stored key-value pair: {key}={value}")
                             else:
                                 logging.info(f"Skipped expired key: {key}")
