@@ -171,7 +171,7 @@ class RDBHandler:
                                         raise ValueError(f"Invalid expiry marker: {expiry_bytes[0:2].hex()}")
 
                                     # Convert expiry timestamp (last 8 bytes)
-                                    expire_at = int.from_bytes(expiry_bytes[2:], byteorder='little')
+                                    expire_at = int.from_bytes(expiry_bytes[2:], byteorder='big')
 
                                     # Read key
                                     key_len = f.read(1)[0]
@@ -183,7 +183,7 @@ class RDBHandler:
                                     value_bytes = f.read(value_len)
                                     value = value_bytes.decode('utf-8')
 
-                                    current_time = int(time.time() * 1000)
+                                    current_time = int(time.time())
                                     logging.info(
                                         f"Entry {i}: Key: {key}, Value: {value}, Expires: {expire_at}, Current: {current_time}")
                                     logging.info(
