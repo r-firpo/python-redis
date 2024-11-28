@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 import time, logging
 
@@ -98,6 +99,9 @@ class RedisDataStore:
                 # Convert current time to milliseconds for comparison
                 current_time_ms = int(time.time() * 1000)
                 expire_at = self.expires[key].expire_at
+                logging.info(
+                    f"Checking expiry for {key}: expires_at={expire_at} ({datetime.fromtimestamp(expire_at / 1000)}), "
+                    f"current={current_time_ms} ({datetime.fromtimestamp(current_time_ms / 1000)})")
 
                 if current_time_ms >= expire_at:
                     # Key has expired

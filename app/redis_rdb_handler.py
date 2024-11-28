@@ -2,6 +2,7 @@ import os
 import struct
 import time
 import logging
+from datetime import datetime
 from typing import Dict, Optional, BinaryIO, Tuple
 
 logging.basicConfig(
@@ -192,6 +193,10 @@ class RDBHandler:
                                         logging.info(f"Stored key {key}")
                                     else:
                                         logging.info(f"Skipped expired key {key}")
+                                        logging.info(f"Raw expiry bytes: {expiry_bytes[2:].hex()}")
+                                        expire_at = int.from_bytes(expiry_bytes[2:], byteorder='little')
+                                        logging.info(
+                                            f"Parsed timestamp: {expire_at}, as datetime: {datetime.fromtimestamp(expire_at / 1000)}")
 
                                 except Exception as e:
                                     logging.error(f"Error processing entry {i}: {e}")
