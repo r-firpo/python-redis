@@ -173,7 +173,12 @@ class RDBHandler:
 
                                         # Read key length and key
                                         key_len = f.read(1)[0]
-                                        key = f.read(key_len).decode('utf-8')
+                                        key = f.read(key_len)
+
+                                        logger.info(f"Reading key_len {key_len} with key {key}")
+                                        key.decode('utf-8')
+                                        logger.info(f"decoded_key: {key}")
+
 
                                         # Read value length and value
                                         value_len = f.read(1)[0]
