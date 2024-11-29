@@ -19,6 +19,7 @@ class ReplicationState:
 
 
 class ReplicationManager:
+    """Handles secondary-side replication of data"""
     def __init__(self, config: ServerConfig):
         self.config = config
         self.state = ReplicationState()
