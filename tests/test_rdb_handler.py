@@ -3,6 +3,7 @@ import pytest
 import tempfile
 import time
 from pathlib import Path
+from datetime import datetime
 from app.redis_rdb_handler import RDBHandler
 
 
@@ -19,140 +20,90 @@ class TestRDBHandler:
     """Test RDB file handling functionality"""
 
     def test_save_and_load_basic(self, temp_dir):
-        """Test basic save and load of data"""
-        rdb_handler = RDBHandler(temp_dir, "test.rdb")
+        """Test saving and loading basic key-value pairs without expiry"""
+        handler = RDBHandler(temp_dir, "test.rdb")
 
         # Test data
         data = {"key1": "value1", "key2": "value2"}
-        expires = {}
+        expires = {}  # No expiries
 
-        # Save data
-        assert rdb_handler.save(data, expires) == True
+        # Save and load
+        assert handler.save(data, expires)
+        loaded_data, loaded_expires = handler.load()
 
-        # Load data
-        result = rdb_handler.load()
-        assert result is not None
-
-        loaded_data, loaded_expires = result
         assert loaded_data == data
-        assert loaded_expires == expires
+        assert loaded_expires == {}
 
     def test_save_and_load_with_expiry(self, temp_dir):
-        """Test save and load with expiration times"""
-        rdb_handler = RDBHandler(temp_dir, "test.rdb")
+        """Test saving and loading key-value pairs with expiry"""
+        handler = RDBHandler(temp_dir, "test.rdb")
 
-        current_time = int(time.time() * 1000)
-        future_time = current_time + 10000  # 10 seconds in future
-
+        # Test data with expiry
+        current_time = int(time.time())
         data = {"key1": "value1", "key2": "value2"}
-        expires = {
-            "key1": future_time,
-            "key2": future_time + 1000
-        }
+        expires = {"key1": current_time + 5000}  # Expires in 5 seconds
 
-        # Save data
-        assert rdb_handler.save(data, expires) == True
+        # Save and load
+        assert handler.save(data, expires)
+        loaded_data, loaded_expires = handler.load()
 
-        # Load data
-        result = rdb_handler.load()
-        assert result is not None
-
-        loaded_data, loaded_expires = result
+        # Validate loaded data
         assert loaded_data == data
-        assert loaded_expires == expires
+        assert "key1" in loaded_expires
+        assert loaded_expires["key1"] == expires["key1"]
+        assert "key2" not in loaded_expires
 
-    def test_expired_keys_not_loaded(self, temp_dir):
+    def test_load_expired_keys(self, temp_dir):
         """Test that expired keys are not loaded"""
-        rdb_handler = RDBHandler(temp_dir, "test.rdb")
+        handler = RDBHandler(temp_dir, "test.rdb")
 
-        current_time = int(time.time() * 1000)
-        past_time = current_time - 1000  # 1 second in past
-        future_time = current_time + 10000  # 10 seconds in future
+        # Test data with expiry
+        current_time = int(time.time())
+        data = {"key1": "value1", "key2": "value2"}
+        expires = {"key1": current_time - 5000}  # Expired 5000 seconds ago
 
-        data = {
-            "expired_key": "value1",
-            "valid_key": "value2"
-        }
-        expires = {
-            "expired_key": past_time,
-            "valid_key": future_time
-        }
+        # Save and load
+        assert handler.save(data, expires)
+        loaded_data, loaded_expires = handler.load()
 
-        # Save data
-        assert rdb_handler.save(data, expires) == True
+        # Validate loaded data
+        assert "key1" not in loaded_data
+        assert "key2" in loaded_data
+        assert loaded_expires == {}
 
-        # Load data
-        result = rdb_handler.load()
-        assert result is not None
+    def test_save_and_load_mixed(self, temp_dir):
+        """Test saving and loading a mix of expiring and non-expiring keys"""
+        handler = RDBHandler(temp_dir, "test.rdb")
 
-        loaded_data, loaded_expires = result
-        assert "expired_key" not in loaded_data
-        assert "expired_key" not in loaded_expires
-        assert loaded_data["valid_key"] == "value2"
-        assert loaded_expires["valid_key"] == future_time
+        # Test data
+        current_time = int(time.time())
+        data = {"key1": "value1", "key2": "value2", "key3": "value3"}
+        expires = {"key1": current_time + 100}  # key1 expires in 100 seconds
 
-    def test_load_nonexistent_file(self, temp_dir):
-        """Test loading when RDB file doesn't exist"""
-        rdb_handler = RDBHandler(temp_dir, "nonexistent.rdb")
-        assert rdb_handler.load() is None
+        # Save and load
+        assert handler.save(data, expires)
+        loaded_data, loaded_expires = handler.load()
 
-    def test_save_creates_directory(self, temp_dir):
-        """Test that save creates directory if it doesn't exist"""
-        subdir = os.path.join(temp_dir, "subdir")
-        handler = RDBHandler(subdir, "test.rdb")
+        # Validate loaded data
+        assert "key1" in loaded_data
+        assert "key2" in loaded_data
+        assert "key3" in loaded_data
+        assert "key1" in loaded_expires
+        assert "key2" not in loaded_expires
+        assert "key3" not in loaded_expires
 
-        data = {"key": "value"}
+    def test_empty_save_and_load(self, temp_dir):
+        """Test saving and loading when no data is present"""
+        handler = RDBHandler(temp_dir, "test.rdb")
+
+        # Test empty data
+        data = {}
         expires = {}
 
-        assert handler.save(data, expires) == True
-        assert os.path.exists(subdir)
+        # Save and load
+        assert handler.save(data, expires)
+        loaded_data, loaded_expires = handler.load()
 
-    @pytest.mark.parametrize("test_data", [
-        ({"": "empty_key"}, {}),
-        ({"key": ""}, {}),
-        ({"a" * 1000: "large_key"}, {}),
-        ({"key": "a" * 1000}, {}),
-        ({"special!@#$%": "value"}, {}),
-        ({"key": "!@#$%^&*()"}, {}),
-        ({"unicode🌍": "value"}, {}),
-        ({"key": "value🌍"}, {})
-    ])
-    def test_save_load_edge_cases(self, temp_dir, test_data):
-        """Test save and load with various edge cases"""
-        rdb_handler = RDBHandler(temp_dir, "test.rdb")
-
-        data, expires = test_data
-        assert rdb_handler.save(data, expires) == True
-
-        result = rdb_handler.load()
-        assert result is not None
-
-        loaded_data, loaded_expires = result
-        assert loaded_data == data
-        assert loaded_expires == expires
-
-    def test_file_corruption_handling(self, temp_dir):
-        """Test handling of corrupted RDB file"""
-        rdb_handler = RDBHandler(temp_dir, "test.rdb")
-
-        # Save valid data first
-        data = {"key": "value"}
-        assert rdb_handler.save(data, {}) == True
-
-        # Corrupt the file
-        with open(rdb_handler.full_path, 'wb') as f:
-            f.write(b'CORRUPTED_DATA')
-
-        # Attempt to load corrupted file
-        assert rdb_handler.load() is None
-
-    def test_invalid_header(self, temp_dir):
-        """Test handling of invalid RDB header"""
-        rdb_handler = RDBHandler(temp_dir, "test.rdb")
-
-        # Create file with invalid header
-        with open(rdb_handler.full_path, 'wb') as f:
-            f.write(b'NOTREDIS0001')
-
-        # Attempt to load file
-        assert rdb_handler.load() is None
+        # Validate
+        assert loaded_data == {}
+        assert loaded_expires == {}

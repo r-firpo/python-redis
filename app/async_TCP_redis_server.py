@@ -227,6 +227,45 @@ class RedisServer:
                     ])
                 else:
                     return self.protocol.encode_error(f'unknown CONFIG subcommand {args[0]}')
+
+            if cmd == 'INFO':
+                if len(args) > 1:
+                    return self.protocol.encode_error('wrong number of arguments for INFO')
+
+                section = args[0].lower() if args else None
+                if section is None or section == 'replication':
+                    # Build replication info
+                    info_lines = [
+                        "# Replication",
+                        f"role:{self.config.role}",
+                        f"connected_slaves:{self.config.connected_slaves}"
+                    ]
+                    if self.config.role == 'master':
+                        info_lines.extend([
+                            f"master_replid:{self.config.master_replid}",
+                            f"master_repl_offset:{self.config.master_repl_offset}",
+                            "second_repl_offset:-1",
+                            "repl_backlog_active:0",
+                            f"repl_backlog_size:{self.config.repl_backlog_size}",
+                            "repl_backlog_first_byte_offset:0",
+                            "repl_backlog_histlen:0"
+                        ])
+                    elif self.config.role == 'slave':
+                        info_lines.extend([
+                            f"master_host:{self.config.master_host}",
+                            f"master_port:{self.config.master_port}",
+                            "master_link_status:down",  # update this when we implement replication
+                            "master_last_io_seconds_ago:-1",
+                            f"master_sync_in_progress:0",
+                            "slave_repl_offset:0",
+                            "slave_priority:100",
+                            "slave_read_only:1"
+                        ])
+                    # Join lines with \r\n for RESP protocol
+                    info_str = '\r\n'.join(info_lines)
+                    return self.protocol.encode_bulk_string(info_str)
+                else:
+                    return self.protocol.encode_error(f'Invalid section name {section}')
             else:
                 return self.protocol.encode_error(f'unknown command {cmd}')
 
