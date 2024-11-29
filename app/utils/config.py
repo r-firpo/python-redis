@@ -46,15 +46,19 @@ class ServerConfig:
                 except ValueError:
                     raise ValueError(f"Invalid port number: {args[i + 1]}")
                 i += 2
-            elif args[i] == '--replicaof' and i + 2 < len(args):
-                config.role = 'slave'
-                config.master_host = args[i + 1]
+            elif args[i] == '--replicaof' and i + 1 < len(args):
+                # Parse the host and port from the quoted string
                 try:
-                    config.master_port = int(args[i + 2])
-                except ValueError:
-                    raise ValueError(f"Invalid master port number: {args[i + 2]}")
-                i += 3
+                    host_port = args[i + 1].strip('"\'').split()
+                    if len(host_port) != 2:
+                        raise ValueError("replicaof requires host and port")
+
+                    config.role = 'slave'
+                    config.master_host = host_port[0]
+                    config.master_port = int(host_port[1])
+                except (IndexError, ValueError) as e:
+                    raise ValueError(f"Invalid replicaof format. Expected 'host port', got {args[i + 1]}")
+                i += 2
             else:
                 i += 1
-
         return config
