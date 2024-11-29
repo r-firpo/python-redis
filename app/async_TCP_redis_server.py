@@ -276,6 +276,36 @@ class RedisServer:
                     return self.protocol.encode_bulk_string(info_str)
                 else:
                     return self.protocol.encode_error(f'Invalid section name {section}')
+
+            if cmd == 'REPLCONF':
+                if not args:
+                    return self.protocol.encode_error('wrong number of arguments for REPLCONF')
+
+                subcmd = args[0].lower()
+                if subcmd == 'listening-port':
+                    if len(args) != 2:
+                        return self.protocol.encode_error('wrong number of arguments for REPLCONF listening-port')
+                    # We just acknowledge the port for now
+                    return self.protocol.encode_simple_string('OK')
+
+                elif subcmd == 'capa':
+                    if len(args) != 2:
+                        return self.protocol.encode_error('wrong number of arguments for REPLCONF capa')
+                    # We acknowledge the capability (psync2)
+                    return self.protocol.encode_simple_string('OK')
+
+                else:
+                    return self.protocol.encode_error(f'unknown REPLCONF subcommand {subcmd}')
+
+            elif cmd == 'PSYNC':
+                if len(args) != 2:
+                    return self.protocol.encode_error('wrong number of arguments for PSYNC')
+
+                # For now, we always respond with FULLRESYNC
+                # The replication ID should be consistent for the same master instance
+                response = f"FULLRESYNC {self.config.master_replid} 0"
+                self.config.connected_slaves += 1
+                return self.protocol.encode_simple_string(response)
             else:
                 return self.protocol.encode_error(f'unknown command {cmd}')
 
