@@ -27,6 +27,44 @@ class RedisMaster:
         self.replication_backlog = bytearray()
         self.backlog_offset = 0
         self.max_backlog_size = config.repl_backlog_size
+        self.ack_check_task: Optional[asyncio.Task] = None
+
+    async def start_ack_checker(self):
+        """Start periodic task to check replica offsets"""
+        self.ack_check_task = asyncio.create_task(self._check_replica_acks())
+
+    async def _check_replica_acks(self):
+        """Periodically send REPLCONF GETACK to replicas"""
+        try:
+            while True:
+                for replica_key, replica_info in list(self.replicas.items()):
+                    try:
+                        # Send REPLCONF GETACK command
+                        getack_cmd = (
+                            b"*3\r\n"
+                            b"$8\r\nREPLCONF\r\n"
+                            b"$6\r\nGETACK\r\n"
+                            b"$0\r\n\r\n"
+                        )
+                        replica_info.writer.write(getack_cmd)
+                        await replica_info.writer.drain()
+                    except Exception as e:
+                        logger.error(f"Error sending GETACK to replica {replica_key}: {e}")
+                        await self.remove_replica(replica_info.writer)
+
+                await asyncio.sleep(1)  # Check every second
+        except asyncio.CancelledError:
+            logger.info("ACK checker task cancelled")
+            raise
+
+    async def stop(self):
+        """Stop the master's background tasks"""
+        if self.ack_check_task:
+            self.ack_check_task.cancel()
+            try:
+                await self.ack_check_task
+            except asyncio.CancelledError:
+                pass
 
     def _get_replica_key(self, writer: asyncio.StreamWriter) -> str:
         """Get unique key for a replica based on its connection info"""

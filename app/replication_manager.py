@@ -124,8 +124,25 @@ class ReplicationManager:
                 command = await self.parser.parse_stream(self.master_reader)
                 if not command:
                     break
+
                 logger.info(f"Received command from master: {command}")
+
+                # Handle REPLCONF GETACK command
+                if command.command.upper() == 'REPLCONF' and len(command.args) > 0 and command.args[
+                    0].upper() == 'GETACK':
+                    # Send ACK response with current offset
+                    ack_response = self._encode_array_command(
+                        "REPLCONF",
+                        "ACK",
+                        str(self.state.offset)
+                    )
+                    self.master_writer.write(ack_response)
+                    await self.master_writer.drain()
+                    continue
+
+                # Process normal command
                 await self._process_master_command(command)
+
         except Exception as e:
             logger.error(f"Error processing master stream: {e}")
             raise

@@ -92,9 +92,12 @@ class RedisServer:
         )
         self.monitor_task = asyncio.create_task(self.monitor_connections())
 
-        # Start replication if we're a slave
+        # Start replication if we're a secondary
         if self.config.role == 'slave':
             self.replication_task = asyncio.create_task(self.replication_manager.start_replication())
+        # Start ACK checker if we're a primary
+        elif self.config.role == 'master':
+            await self.master.start_ack_checker()
 
         return self
 
@@ -113,6 +116,9 @@ class RedisServer:
                 await self.replication_task
             except asyncio.CancelledError:
                 pass
+
+        if self.master:
+            await self.master.stop()
 
         if self.server:
             self.server.close()
