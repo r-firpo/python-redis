@@ -5,6 +5,7 @@ from typing import Optional, Type, Protocol, List
 
 from app.connection_manager import ConnectionManager, DefaultConnectionManager
 from app.redis_data_store import RedisDataStore
+from app.redis_master_handler import RedisMaster
 from app.redis_parser import RESPCommand, RedisProtocolHandler, RESPParser
 from app.replication_manager import ReplicationManager
 
