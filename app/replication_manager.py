@@ -53,8 +53,18 @@ class ReplicationManager:
 
             # Step 2: Send REPLCONF listening-port
             logger.info(f"Sending REPLCONF listening-port {self.config.port}")
-            port_cmd = f"*3\r\n$8\r\nREPLCONF\r\n$13\r\nlistening-port\r\n${len(str(self.config.port))}\r\n{self.config.port}\r\n"
-            self.master_writer.write(port_cmd.encode())
+            port_str = str(self.config.port)
+            replconf_port = (
+                    b"*3\r\n"  # Array of 3 elements
+                    b"$8\r\n"  # Length of "REPLCONF"
+                    b"REPLCONF\r\n"  # Command
+                    b"$13\r\n"  # Length of "listening-port"
+                    b"listening-port\r\n"  # First argument
+                    b"$4\r\n"  # Length of port number (assuming 4 digits)
+                    + port_str.encode() +  # Port number
+                    b"\r\n"  # Final CRLF
+            )
+            self.master_writer.write(replconf_port)
             await self.master_writer.drain()
 
             # Wait for OK
@@ -64,8 +74,15 @@ class ReplicationManager:
 
             # Step 3: Send REPLCONF capa psync2
             logger.info("Sending REPLCONF capa psync2")
-            capa_cmd = b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"
-            self.master_writer.write(capa_cmd)
+            self.master_writer.write(
+                b"*3\r\n"  # Array of 3 elements
+                b"$8\r\n"  # Length of "REPLCONF"
+                b"REPLCONF\r\n"  # Command
+                b"$4\r\n"  # Length of "capa"
+                b"capa\r\n"  # First argument
+                b"$6\r\n"  # Length of "psync2"
+                b"psync2\r\n"  # Second argument
+            )
             await self.master_writer.drain()
 
             # Wait for OK
@@ -75,8 +92,15 @@ class ReplicationManager:
 
             # Step 4: Send PSYNC
             logger.info("Sending PSYNC ? -1")
-            psync_cmd = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
-            self.master_writer.write(psync_cmd)
+            self.master_writer.write(
+                b"*3\r\n"  # Array of 3 elements
+                b"$5\r\n"  # Length of "PSYNC"
+                b"PSYNC\r\n"  # Command
+                b"$1\r\n"  # Length of "?"
+                b"?\r\n"  # First argument
+                b"$2\r\n"  # Length of "-1"
+                b"-1\r\n"  # Second argument
+            )
             await self.master_writer.drain()
 
             # Update replication state
