@@ -6,6 +6,7 @@ from typing import Optional, Type, Protocol, List
 from app.connection_manager import ConnectionManager, DefaultConnectionManager
 from app.redis_data_store import RedisDataStore
 from app.redis_parser import RESPCommand, RedisProtocolHandler, RESPParser
+from app.replication_manager import ReplicationManager
 
 from app.utils.config import ServerConfig
 
@@ -45,21 +46,6 @@ class RedisServer:
     A custom async TCP redis server that supports RESP protocol and provides monitoring of active connections
     """
 
-    def __init__(self,
-                 data_store: DataStore,
-                 protocol_handler: ProtocolHandler,
-                 parser: Parser,
-                 connection_manager: ConnectionManager,
-                 config: ServerConfig):
-        self.data_store = data_store
-        self.protocol = protocol_handler
-        self.parser = parser
-        self.connection_manager = connection_manager
-        self.config = config
-
-        self.server = None
-        self.monitor_task: Optional[asyncio.Task] = None
-
     @classmethod
     async def create(cls,
                      data_store: Optional[DataStore] = None,
@@ -76,6 +62,23 @@ class RedisServer:
             config=config or ServerConfig(),
         )
 
+    def __init__(self,
+                 data_store: DataStore,
+                 protocol_handler: ProtocolHandler,
+                 parser: Parser,
+                 connection_manager: ConnectionManager,
+                 config: ServerConfig):
+        self.data_store = data_store
+        self.protocol = protocol_handler
+        self.parser = parser
+        self.connection_manager = connection_manager
+        self.config = config
+        self.replication_manager = ReplicationManager(config)
+
+        self.server = None
+        self.monitor_task: Optional[asyncio.Task] = None
+        self.replication_task: Optional[asyncio.Task] = None
+
     async def __aenter__(self):
         """Start server and monitoring when entering context"""
         self.server = await asyncio.start_server(
@@ -86,19 +89,26 @@ class RedisServer:
             limit=self.config.buffer_limit
         )
         self.monitor_task = asyncio.create_task(self.monitor_connections())
+
+        # Start replication if we're a slave
+        if self.config.role == 'slave':
+            self.replication_task = asyncio.create_task(self.replication_manager.start_replication())
+
         return self
 
-    async def __aexit__(
-            self,
-            exc_type: Optional[Type[BaseException]],
-            exc_val: Optional[BaseException],
-            exc_tb: Optional[TracebackType]
-    ):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Clean up all resources when exiting context"""
         if self.monitor_task:
             self.monitor_task.cancel()
             try:
                 await self.monitor_task
+            except asyncio.CancelledError:
+                pass
+
+        if self.replication_task:
+            self.replication_task.cancel()
+            try:
+                await self.replication_task
             except asyncio.CancelledError:
                 pass
 
