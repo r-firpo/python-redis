@@ -28,6 +28,7 @@ class RedisMaster:
         self.backlog_offset = 0
         self.max_backlog_size = config.repl_backlog_size
         self.ack_check_task: Optional[asyncio.Task] = None
+        self.ack_callbacks: Dict[str, callable] = {}
 
     async def start_ack_checker(self):
         """Start periodic task to check replica offsets"""
@@ -48,6 +49,11 @@ class RedisMaster:
                         )
                         replica_info.writer.write(getack_cmd)
                         await replica_info.writer.drain()
+
+                        # If there are callbacks registered for this replica
+                        if replica_key in self.ack_callbacks:
+                            await self.ack_callbacks[replica_key](replica_key, replica_info.offset)
+
                     except Exception as e:
                         logger.error(f"Error sending GETACK to replica {replica_key}: {e}")
                         await self.remove_replica(replica_info.writer)

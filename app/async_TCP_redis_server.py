@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from types import TracebackType
-from typing import Optional, Type, Protocol, List
+from typing import Optional, Type, Protocol, List, Set
 
 from app.connection_manager import ConnectionManager, DefaultConnectionManager
 from app.redis_data_store import RedisDataStore
@@ -74,8 +74,9 @@ class RedisServer:
         self.parser = parser
         self.connection_manager = connection_manager
         self.config = config
-        self.replication_manager = ReplicationManager(config, data_store) if config.role == 'slave' else None
-        self.master = RedisMaster(config, data_store) if config.role == 'master' else None
+        self.role = config.role
+        self.replication_manager = ReplicationManager(config, data_store) if self.role == 'slave' else None
+        self.master = RedisMaster(config, data_store) if self.role == 'master' else None
 
         self.server = None
         self.monitor_task: Optional[asyncio.Task] = None
@@ -205,7 +206,7 @@ class RedisServer:
             # Handle write commands
             response = None
             is_write_command = cmd in {'SET', 'DEL', 'EXPIRE', 'INCR', 'DECR', 'RPUSH', 'LPUSH', 'SADD',
-                                       'ZADD'}
+                                       'ZADD'} #TODO add support for other write commands
 
             if is_write_command and self.config.role == 'master':
                 # Get the exact bytes that were received for this command
@@ -343,11 +344,106 @@ class RedisServer:
                     # Join lines with \r\n for RESP protocol
                     info_str = '\r\n'.join(info_lines)
                     return self.protocol.encode_bulk_string(info_str)
+
+                elif cmd == 'WAIT':
+                    if len(args) != 2:
+                        return self.protocol.encode_error('wrong number of arguments for WAIT')
+                    try:
+                        numreplicas = int(args[0])
+                        timeout = int(args[1])
+                        if numreplicas < 0:
+                            return self.protocol.encode_error('numreplicas must be non-negative')
+                        if timeout < 0:
+                            return self.protocol.encode_error('timeout must be non-negative')
+                    except ValueError:
+                        return self.protocol.encode_error('value is not an integer or out of range')
+
+                    # Check if we're a replica
+                    if self.role == 'slave':
+                        # On replica, WAIT always returns 0 immediately
+                        return self.protocol.encode_integer(0)
+
+                    # Otherwise, handle as master
+                    ack_count = await self._wait_for_replicas(numreplicas, timeout)
+                    return self.protocol.encode_integer(ack_count)
                 else:
                     return self.protocol.encode_error(f'Invalid section name {section}')
 
         except Exception as e:
             return self.protocol.encode_error(str(e))
+
+    async def _wait_for_replicas(self, numreplicas: int, timeout: int) -> int:
+        """
+        Wait for specified number of replicas to acknowledge all writes.
+        Returns the number of replicas that acknowledged the writes.
+        """
+        if not self.role == 'master':
+            # If this instance is not a master or replication is not configured
+            return 0
+
+        if timeout == 0:
+            # Block forever
+            wait_time = None
+        else:
+            wait_time = timeout / 1000.0  # Convert milliseconds to seconds
+
+        try:
+            # Get current offset
+            current_offset = self.master.backlog_offset + len(self.master.replication_backlog)
+
+            # Create set to track replicas that have caught up
+            caught_up_replicas: Set[str] = set()
+
+            # Check which replicas are already caught up
+            for replica_id, replica_info in self.master.replicas.items():
+                if replica_info.offset >= current_offset:
+                    caught_up_replicas.add(replica_id)
+
+            # If we already have enough replicas, return immediately
+            if len(caught_up_replicas) >= numreplicas:
+                return len(caught_up_replicas)
+
+            # Create condition to wait for replica acknowledgments
+            condition = asyncio.Condition()
+
+            # Register callback for replica acknowledgments
+            async def check_acks(replica_id: str, offset: int):
+                if offset >= current_offset:
+                    caught_up_replicas.add(replica_id)
+                    async with condition:
+                        condition.notify_all()
+
+            # Register callback for all replicas
+            callbacks = {}
+            for replica_id, replica_info in self.master.replicas.items():
+                if replica_id not in caught_up_replicas:
+                    callbacks[replica_id] = check_acks
+
+            # Add callbacks to master
+            self.master.ack_callbacks.update(callbacks)
+
+            try:
+                # Wait for condition with timeout
+                async with condition:
+                    await asyncio.wait_for(
+                        condition.wait_for(
+                            lambda: len(caught_up_replicas) >= numreplicas
+                        ),
+                        timeout=wait_time
+                    )
+            except asyncio.TimeoutError:
+                # Timeout reached, return current count
+                pass
+            finally:
+                # Remove callbacks
+                for replica_id in callbacks:
+                    self.master.ack_callbacks.pop(replica_id, None)
+
+            return len(caught_up_replicas)
+
+        except Exception as e:
+            logger.error(f"Error in wait_for_replicas: {e}")
+            return 0
 
     async def monitor_connections(self):
         """Monitor active connections and their status"""
