@@ -346,31 +346,31 @@ class RedisServer:
                     # Join lines with \r\n for RESP protocol
                     info_str = '\r\n'.join(info_lines)
                     return self.protocol.encode_bulk_string(info_str)
-
-                elif cmd == 'WAIT':
-                    if len(args) != 2:
-                        return self.protocol.encode_error('wrong number of arguments for WAIT')
-                    try:
-                        numreplicas = int(args[0])
-                        timeout = int(args[1])
-                        if numreplicas < 0:
-                            return self.protocol.encode_error('numreplicas must be non-negative')
-                        if timeout < 0:
-                            return self.protocol.encode_error('timeout must be non-negative')
-                    except ValueError:
-                        return self.protocol.encode_error('value is not an integer or out of range')
-
-                    # Check if we're a replica
-                    if not self.master:
-                        # On replica, WAIT always returns 0 immediately
-                        return self.protocol.encode_integer(0)
-
-                    # Otherwise, handle as master
-                    ack_count = await self._wait_for_replicas(numreplicas, timeout)
-                    logger.info(f"Returning {ack_count} replicas for WAIT command")
-                    return self.protocol.encode_integer(ack_count)
                 else:
                     return self.protocol.encode_error(f'Invalid section name {section}')
+
+            elif cmd == 'WAIT':
+                if len(args) != 2:
+                    return self.protocol.encode_error('wrong number of arguments for WAIT')
+                try:
+                    numreplicas = int(args[0])
+                    timeout = int(args[1])
+                    if numreplicas < 0:
+                        return self.protocol.encode_error('numreplicas must be non-negative')
+                    if timeout < 0:
+                        return self.protocol.encode_error('timeout must be non-negative')
+                except ValueError:
+                    return self.protocol.encode_error('value is not an integer or out of range')
+
+                # Check if we're a replica
+                if not self.master:
+                    # On replica, WAIT always returns 0 immediately
+                    return self.protocol.encode_integer(0)
+
+                # Otherwise, handle as master
+                ack_count = await self._wait_for_replicas(numreplicas, timeout)
+                logger.info(f"Returning {ack_count} replicas for WAIT command")
+                return self.protocol.encode_integer(ack_count)
 
         except Exception as e:
             return self.protocol.encode_error(str(e))
