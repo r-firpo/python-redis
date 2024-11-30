@@ -5,15 +5,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from app.redis_rdb_handler import RDBHandler
-
-
-@pytest.fixture
-def temp_dir():
-    """Create a temporary directory for RDB files"""
-    with tempfile.TemporaryDirectory() as tmpdirname:
-        path = Path(tmpdirname)
-        path.mkdir(exist_ok=True)
-        yield str(path)
+from fixtures import temp_dir
 
 
 class TestRDBHandler:

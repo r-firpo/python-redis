@@ -73,3 +73,10 @@ async def redis_server(test_config, data_store) -> AsyncGenerator[RedisServer, N
                 await server.monitor_task
             except asyncio.CancelledError:
                 pass
+@pytest.fixture
+def temp_dir():
+    """Create a temporary directory for RDB files"""
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        path = Path(tmpdirname)
+        path.mkdir(exist_ok=True)
+        yield str(path)

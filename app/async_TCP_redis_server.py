@@ -27,6 +27,9 @@ class DataStore(Protocol):
 
     def delete(self, key: str) -> bool: ...
 
+    def get_keys(self) -> List[str]: ...
+
+
 class ProtocolHandler(Protocol):
     def encode_simple_string(self, s: str) -> bytes: ...
 
@@ -74,9 +77,8 @@ class RedisServer:
         self.parser = parser
         self.connection_manager = connection_manager
         self.config = config
-        self.role = config.role
-        self.replication_manager = ReplicationManager(config, data_store) if self.role == 'slave' else None
-        self.master = RedisMaster(config, data_store) if self.role == 'master' else None
+        self.replication_manager = ReplicationManager(config, data_store) if config.role == 'slave' else None
+        self.master = RedisMaster(config, data_store) if config.role == 'master' else None
 
         self.server = None
         self.monitor_task: Optional[asyncio.Task] = None
@@ -94,10 +96,10 @@ class RedisServer:
         self.monitor_task = asyncio.create_task(self.monitor_connections())
 
         # Start replication if we're a secondary
-        if self.config.role == 'slave':
+        if not self.master:
             self.replication_task = asyncio.create_task(self.replication_manager.start_replication())
         # Start ACK checker if we're a primary
-        elif self.config.role == 'master':
+        elif self.master:
             await self.master.start_ack_checker()
 
         return self
@@ -147,7 +149,7 @@ class RedisServer:
         except Exception as e:
             logger.error(f"Error handling client {peer_name}: {e}")
         finally:
-            if self.config.role == 'master':
+            if self.master:
                 await self.master.remove_replica(writer)
             await self.connection_manager.remove_connection(writer)
             writer.close()
@@ -160,7 +162,7 @@ class RedisServer:
 
         try:
             # Handle replication commands when acting as master
-            if self.config.role == 'master':
+            if self.master:
                 if cmd == 'REPLCONF':
                     if not args:
                         return self.protocol.encode_error('wrong number of arguments for REPLCONF')
@@ -208,7 +210,7 @@ class RedisServer:
             is_write_command = cmd in {'SET', 'DEL', 'EXPIRE', 'INCR', 'DECR', 'RPUSH', 'LPUSH', 'SADD',
                                        'ZADD'} #TODO add support for other write commands
 
-            if is_write_command and self.config.role == 'master':
+            if is_write_command and self.master:
                 # Get the exact bytes that were received for this command
                 command_bytes = self.protocol.encode_array([
                     self.protocol.encode_bulk_string(cmd),
@@ -320,7 +322,7 @@ class RedisServer:
                         f"role:{self.config.role}",
                         f"connected_slaves:{self.config.connected_slaves}"
                     ]
-                    if self.config.role == 'master':
+                    if self.master:
                         info_lines.extend([
                             f"master_replid:{self.config.master_replid}",
                             f"master_repl_offset:{self.config.master_repl_offset}",
@@ -330,7 +332,7 @@ class RedisServer:
                             "repl_backlog_first_byte_offset:0",
                             "repl_backlog_histlen:0"
                         ])
-                    elif self.config.role == 'slave':
+                    elif not self.master:
                         info_lines.extend([
                             f"master_host:{self.config.master_host}",
                             f"master_port:{self.config.master_port}",
@@ -359,12 +361,13 @@ class RedisServer:
                         return self.protocol.encode_error('value is not an integer or out of range')
 
                     # Check if we're a replica
-                    if self.role == 'slave':
+                    if not self.master:
                         # On replica, WAIT always returns 0 immediately
                         return self.protocol.encode_integer(0)
 
                     # Otherwise, handle as master
                     ack_count = await self._wait_for_replicas(numreplicas, timeout)
+                    logger.info(f"Returning {ack_count} replicas for WAIT command")
                     return self.protocol.encode_integer(ack_count)
                 else:
                     return self.protocol.encode_error(f'Invalid section name {section}')
@@ -377,7 +380,7 @@ class RedisServer:
         Wait for specified number of replicas to acknowledge all writes.
         Returns the number of replicas that acknowledged the writes.
         """
-        if not self.role == 'master':
+        if not self.master or not self.master.replicas:
             # If this instance is not a master or replication is not configured
             return 0
 
