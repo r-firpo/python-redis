@@ -18,6 +18,8 @@ class ReplicationState:
     master_sync_in_progress: bool = False
     master_last_io_seconds: int = -1
     master_link_down_since: float = 0
+    received_replid: Optional[str] = None
+    offset: int = 0  # Added offset tracking
 
 
 class ReplicationManager:
@@ -30,6 +32,10 @@ class ReplicationManager:
         self.parser = RESPParser()
         self.master_reader: Optional[asyncio.StreamReader] = None
         self.master_writer: Optional[asyncio.StreamWriter] = None
+
+    def _calculate_command_length(self, command: bytes) -> int:
+        """Calculate the length of a command in bytes including CRLF"""
+        return len(command)
 
     def _encode_array_command(self, *args: str) -> bytes:
         """Encode a command and its arguments as a RESP array"""
@@ -81,6 +87,7 @@ class ReplicationManager:
 
             # Load the new RDB file
             logger.info("Loading received RDB file")
+            #TODO check handling for empty RDB
             self.data_store._load_rdb()
 
             logger.info("RDB transfer completed successfully")
@@ -95,11 +102,6 @@ class ReplicationManager:
     async def _process_master_command(self, command: RESPCommand) -> None:
         """Process a command received from master"""
         try:
-            # Update offset based on the full command size
-            # Note: This is a simplification, in real Redis the offset
-            # would be based on the exact bytes received
-            self.state.offset += 1
-
             # Execute the command locally
             cmd = command.command.upper()
             if cmd == 'SET':
@@ -112,7 +114,7 @@ class ReplicationManager:
             elif cmd == 'DEL':
                 if len(command.args) >= 1:
                     self.data_store.delete(command.args[0])
-            # Add other commands as needed...
+            # TODO add other commands as needed
 
         except Exception as e:
             logger.error(f"Error processing master command: {e}")
@@ -127,10 +129,21 @@ class ReplicationManager:
 
                 logger.info(f"Received command from master: {command}")
 
-                # Handle REPLCONF GETACK command
+                # Calculate command size for any command we receive
+                total_size = 1  # * character
+                total_size += len(str(1 + len(command.args))) + 2  # array length + CRLF
+                total_size += 1  # $ character
+                total_size += len(str(len(command.command))) + 2  # length + CRLF
+                total_size += len(command.command) + 2  # command + CRLF
+                for arg in command.args:
+                    total_size += 1  # $ character
+                    total_size += len(str(len(arg))) + 2  # length + CRLF
+                    total_size += len(arg) + 2  # argument + CRLF
+
+                # Handle REPLCONF GETACK
                 if command.command.upper() == 'REPLCONF' and len(command.args) > 0 and command.args[
                     0].upper() == 'GETACK':
-                    # Send ACK response with current offset
+                    # Send ACK with current offset (before counting this GETACK command)
                     ack_response = self._encode_array_command(
                         "REPLCONF",
                         "ACK",
@@ -138,15 +151,18 @@ class ReplicationManager:
                     )
                     self.master_writer.write(ack_response)
                     await self.master_writer.drain()
-                    continue
 
-                # Process normal command
-                await self._process_master_command(command)
+                    # Now increment offset to include this GETACK command
+                    self.state.offset += total_size
+                else:
+                    # Process normal command
+                    await self._process_master_command(command)
+                    # Add command size to offset
+                    self.state.offset += total_size
 
         except Exception as e:
             logger.error(f"Error processing master stream: {e}")
             raise
-
     async def connect_to_master(self):
         """Establish connection to master and perform initial handshake"""
         if self.config.role != 'slave':
@@ -212,22 +228,19 @@ class ReplicationManager:
             self.master_writer.write(psync_cmd)
             await self.master_writer.drain()
 
-            # Update replication state
-            self.state.master_link_status = "up"
-            self.state.master_last_io_seconds = 0
-
             logger.info("Initial replication handshake completed")
 
             # Wait for FULLRESYNC response
-            response = await self.master_reader.readline()
-            if not response.startswith(b'+FULLRESYNC'):
-                raise Exception(f"Unexpected response to PSYNC: {response}")
+            fullsync_response = await self.master_reader.readline()
+            if not fullsync_response.startswith(b"+FULLRESYNC"):
+                raise Exception(f"Unexpected response to PSYNC: {fullsync_response}")
 
             # Parse replication ID and offset
-            parts = response.decode().strip()[1:].split()
+            parts = fullsync_response.decode().strip()[1:].split()
             if len(parts) == 3:  # FULLRESYNC <replid> <offset>
                 self.state.received_replid = parts[1]
-                self.state.offset = int(parts[2])
+                # Reset offset to 0 for new sync
+                self.state.offset = 0
 
             logger.info(f"Starting FULLRESYNC with ID: {self.state.received_replid}, offset: {self.state.offset}")
 
@@ -247,7 +260,6 @@ class ReplicationManager:
             self.master_writer = None
             self.state.master_link_status = "down"
             raise
-
     async def start_replication(self):
         """Start the replication process"""
         if self.config.role != 'slave':
