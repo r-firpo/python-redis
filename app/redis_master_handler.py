@@ -29,6 +29,8 @@ class RedisMaster:
         self.max_backlog_size = config.repl_backlog_size
         self.ack_check_task: Optional[asyncio.Task] = None
         self.ack_callbacks: Dict[str, callable] = {}
+        self.replica_offsets: Dict[str, int] = {}  # Track latest offset for each replica
+        self.replication_condition = asyncio.Condition()  # Global condition for synchronization
 
     async def start_ack_checker(self):
         """Start periodic task to check replica offsets"""
@@ -40,20 +42,15 @@ class RedisMaster:
             while True:
                 for replica_key, replica_info in list(self.replicas.items()):
                     try:
-                        # Send REPLCONF GETACK command
                         getack_cmd = (
                             b"*3\r\n"
                             b"$8\r\nREPLCONF\r\n"
                             b"$6\r\nGETACK\r\n"
-                            b"$0\r\n\r\n"
+                            b"$1\r\n*\r\n"
                         )
+                        logger.info(f"Sending REPLCONF GETACK to {replica_key}")
                         replica_info.writer.write(getack_cmd)
                         await replica_info.writer.drain()
-
-                        # If there are callbacks registered for this replica
-                        if replica_key in self.ack_callbacks:
-                            await self.ack_callbacks[replica_key](replica_key, replica_info.offset)
-
                     except Exception as e:
                         logger.error(f"Error sending GETACK to replica {replica_key}: {e}")
                         await self.remove_replica(replica_info.writer)
@@ -62,6 +59,45 @@ class RedisMaster:
         except asyncio.CancelledError:
             logger.info("ACK checker task cancelled")
             raise
+
+    async def process_ack(self, replica_id: str, offset: str) -> None:
+        """Process REPLCONF ACK command from replica"""
+        try:
+            received_offset = int(offset)
+            async with self.replication_condition:
+                self.replica_offsets[replica_id] = received_offset
+                # Notify any waiters
+                self.replication_condition.notify_all()
+                logger.info(f"Received ACK from {replica_id} with offset {received_offset}")
+        except Exception as e:
+            logger.error(f"Error processing ACK from {replica_id}: {e}")
+
+    async def wait_for_replicas(self, numreplicas: int, current_offset: int, timeout: float) -> int:
+        """Wait for specified number of replicas to acknowledge up to current_offset"""
+        try:
+            async with self.replication_condition:
+                try:
+                    await asyncio.wait_for(
+                        self.replication_condition.wait_for(
+                            lambda: len([
+                                r for r, offset in self.replica_offsets.items()
+                                if offset >= current_offset
+                            ]) >= numreplicas
+                        ),
+                        timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    logger.info(f"Timeout reached in WAIT condition")
+                    pass
+
+                # Return current count of replicas that have caught up
+                return len([
+                    r for r, offset in self.replica_offsets.items()
+                    if offset >= current_offset
+                ])
+        except Exception as e:
+            logger.error(f"Error waiting for replicas: {e}")
+            return 0
 
     async def stop(self):
         """Stop the master's background tasks"""
@@ -134,12 +170,13 @@ class RedisMaster:
         """Propagate write command to all replicas"""
         self.append_to_backlog(command_bytes)
 
-        # Send to all replicas
         for replica_key, replica_info in list(self.replicas.items()):
             try:
+                logger.info(f"Propagating command bytes: {command_bytes!r}")
                 replica_info.writer.write(command_bytes)
                 await replica_info.writer.drain()
                 replica_info.offset += len(command_bytes)
+                logger.info(f"Propagated to replica {replica_key}")
             except Exception as e:
                 logger.error(f"Error propagating command to replica {replica_key}: {e}")
                 await self.remove_replica(replica_info.writer)

@@ -2,11 +2,13 @@ import asyncio
 import tempfile
 from pathlib import Path
 from typing import AsyncGenerator
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from app.async_TCP_redis_server import RedisServer
 from app.redis_data_store import RedisDataStore
+from app.redis_master_handler import RedisMaster
 from app.utils.config import ServerConfig
 
 
@@ -80,3 +82,18 @@ def temp_dir():
         path = Path(tmpdirname)
         path.mkdir(exist_ok=True)
         yield str(path)
+
+@pytest.fixture
+async def master(test_config, data_store):
+    """Create a RedisMaster instance for testing"""
+    master = RedisMaster(test_config, data_store)
+    yield master
+    await master.stop()
+
+@pytest.fixture
+def mock_writer():
+    """Create a mock writer that properly supports async operations"""
+    writer = AsyncMock()
+    writer.get_extra_info = Mock(return_value=('127.0.0.1', 6380))
+    writer.drain = AsyncMock()  # Ensure drain is an async mock
+    return writer

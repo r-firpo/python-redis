@@ -9,7 +9,7 @@ from typing import List, Optional, AsyncGenerator
 
 from app.async_TCP_redis_server import ServerConfig, RedisServer
 from app.redis_data_store import RedisDataStore
-from fixtures import test_config, data_store, temp_dir, redis_server
+from fixtures import test_config, data_store, temp_dir, redis_server, mock_writer
 
 
 # Mock Response Constants
@@ -117,44 +117,44 @@ class MockProtocolHandler:
 
 @pytest.mark.asyncio
 class TestRedisServer:
-    async def test_ping_no_args(self, redis_server):
+    async def test_ping_no_args(serf, redis_server, mock_writer):
         """Test PING command with no arguments"""
         command = RESPCommand(command='PING', args=[])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response == PONG_RESPONSE
 
-    async def test_ping_with_message(self, redis_server):
+    async def test_ping_with_message(serf, redis_server, mock_writer):
         """Test PING command with a custom message"""
         message = "Hello, Redis!"
         command = RESPCommand(command='PING', args=[message])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response == f"${len(message)}\r\n{message}\r\n".encode()
 
-    async def test_ping_too_many_args(self, redis_server):
+    async def test_ping_too_many_args(serf, redis_server, mock_writer):
         """Test PING command with too many arguments"""
         command = RESPCommand(command='PING', args=['arg1', 'arg2'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR")
         assert b"wrong number of arguments" in response
 
-    async def test_echo_with_message(self, redis_server):
+    async def test_echo_with_message(serf, redis_server, mock_writer):
         """Test ECHO command with a message"""
         message = "Hello, Redis!"
         command = RESPCommand(command='ECHO', args=[message])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response == f"${len(message)}\r\n{message}\r\n".encode()
 
-    async def test_echo_no_args(self, redis_server):
+    async def test_echo_no_args(serf, redis_server, mock_writer):
         """Test ECHO command with no arguments"""
         command = RESPCommand(command='ECHO', args=[])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR")
         assert b"wrong number of arguments" in response
 
-    async def test_echo_too_many_args(self, redis_server):
+    async def test_echo_too_many_args(serf, redis_server, mock_writer):
         """Test ECHO command with too many arguments"""
         command = RESPCommand(command='ECHO', args=['arg1', 'arg2'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR")
         assert b"wrong number of arguments" in response
 
@@ -166,21 +166,21 @@ class TestRedisServer:
         "!@#$%^&*()",  # Special characters
         "a" * 1000,  # Long string
     ])
-    async def test_echo_various_messages(self, redis_server, message):
+    async def test_echo_various_messages(serf, redis_server, mock_writer, message):
         """Test ECHO command with various types of messages"""
         command = RESPCommand(command='ECHO', args=[message])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response == f"${len(message)}\r\n{message}\r\n".encode()
 
-    async def test_command_case_insensitivity(self, redis_server):
+    async def test_command_case_insensitivity(serf, redis_server, mock_writer):
         """Test that commands are case insensitive"""
         variants = ['ping', 'PING', 'Ping', 'pInG']
         for cmd in variants:
             command = RESPCommand(command=cmd, args=[])
-            response = await redis_server.process_command(command)
+            response = await redis_server.process_command(command, mock_writer)
             assert response == PONG_RESPONSE
 
-    async def test_concurrent_ping_requests(self, redis_server):
+    async def test_concurrent_ping_requests(serf, redis_server, mock_writer):
         """Test handling multiple PING requests concurrently"""
         commands = [
             RESPCommand(command='PING', args=[]),
@@ -189,7 +189,7 @@ class TestRedisServer:
         ]
 
         responses = await asyncio.gather(
-            *[redis_server.process_command(cmd) for cmd in commands]
+            *[redis_server.process_command(cmd, mock_writer) for cmd in commands]
         )
 
         assert responses[0] == PONG_RESPONSE
@@ -201,74 +201,74 @@ class TestRedisServer:
 class TestRedisGetSet:
     """Test GET and SET commands with various scenarios including expiration"""
 
-    async def test_basic_set_and_get(self, redis_server):
+    async def test_basic_set_and_get(serf, redis_server, mock_writer):
         """Test basic SET followed by GET"""
         # SET command
         command = RESPCommand(command='SET', args=['mykey', 'Hello'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response == b"+OK\r\n"
 
         # GET command
         command = RESPCommand(command='GET', args=['mykey'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response == b"$5\r\nHello\r\n"
 
-    async def test_get_nonexistent_key(self, redis_server):
+    async def test_get_nonexistent_key(serf, redis_server, mock_writer):
         """Test GET on a key that doesn't exist"""
         command = RESPCommand(command='GET', args=['nonexistent'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response == b"$-1\r\n"
 
-    async def test_set_overwrites_existing(self, redis_server):
+    async def test_set_overwrites_existing(serf, redis_server, mock_writer):
         """Test SET overwrites existing value"""
         # Set initial value
-        await redis_server.process_command(RESPCommand('SET', ['key', 'value1']))
+        await redis_server.process_command(RESPCommand('SET', ['key', 'value1']), mock_writer)
 
         # Overwrite with new value
-        await redis_server.process_command(RESPCommand('SET', ['key', 'value2']))
+        await redis_server.process_command(RESPCommand('SET', ['key', 'value2']), mock_writer)
 
         # Verify new value
-        response = await redis_server.process_command(RESPCommand('GET', ['key']))
+        response = await redis_server.process_command(RESPCommand('GET', ['key']), mock_writer)
         assert response == b"$6\r\nvalue2\r\n"
 
-    async def test_get_wrong_args(self, redis_server):
+    async def test_get_wrong_args(serf, redis_server, mock_writer):
         """Test GET with wrong number of arguments"""
         # No arguments
         command = RESPCommand(command='GET', args=[])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR")
         assert b"wrong number of arguments" in response
 
         # Too many arguments
         command = RESPCommand(command='GET', args=['key1', 'key2'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR")
         assert b"wrong number of arguments" in response
 
-    async def test_set_wrong_args(self, redis_server):
+    async def test_set_wrong_args(serf, redis_server, mock_writer):
         """Test SET with wrong number of arguments"""
         # No arguments
         command = RESPCommand(command='SET', args=[])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR")
         assert b"wrong number of arguments" in response
 
         # Only key, no value
         command = RESPCommand(command='SET', args=['key'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR")
         assert b"wrong number of arguments" in response
 
     # Expiration Tests
-    async def test_set_px_basic(self, redis_server):
+    async def test_set_px_basic(serf, redis_server, mock_writer):
         """Test basic SET with PX expiration"""
         # Set with 100ms expiration
         command = RESPCommand(command='SET', args=['key', 'value', 'px', '100'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response == b"+OK\r\n"
 
         # Verify value exists
-        response = await redis_server.process_command(RESPCommand('GET', ['key']))
+        response = await redis_server.process_command(RESPCommand('GET', ['key']), mock_writer)
         assert response == b"$5\r\nvalue\r\n"
         print(redis_server.data_store.expires)
 
@@ -276,47 +276,47 @@ class TestRedisGetSet:
         await asyncio.sleep(0.15)
 
         # Verify value is gone
-        response = await redis_server.process_command(RESPCommand('GET', ['key']))
+        response = await redis_server.process_command(RESPCommand('GET', ['key']), mock_writer)
         assert response == b"$-1\r\n"
 
-    async def test_set_px_override(self, redis_server):
+    async def test_set_px_override(serf, redis_server, mock_writer):
         """Test that SET PX overrides previous expiration"""
         # Set with initial 200ms expiration
         await redis_server.process_command(
-            RESPCommand('SET', ['key', 'value1', 'px', '200'])
+            RESPCommand('SET', ['key', 'value1', 'px', '200']), mock_writer
         )
 
         # Immediately override with 100ms expiration
         await redis_server.process_command(
-            RESPCommand('SET', ['key', 'value2', 'px', '100'])
+            RESPCommand('SET', ['key', 'value2', 'px', '100']), mock_writer
         )
 
         # Wait 150ms - should be expired
         await asyncio.sleep(0.15)
 
-        response = await redis_server.process_command(RESPCommand('GET', ['key']))
+        response = await redis_server.process_command(RESPCommand('GET', ['key']), mock_writer)
         assert response == b"$-1\r\n"
 
-    async def test_set_removes_expiration(self, redis_server):
+    async def test_set_removes_expiration(serf, redis_server, mock_writer):
         """Test that SET without PX removes expiration"""
         # Set with expiration
         await redis_server.process_command(
-            RESPCommand('SET', ['key', 'value1', 'px', '100'])
+            RESPCommand('SET', ['key', 'value1', 'px', '100']), mock_writer
         )
 
         # Override without expiration
         await redis_server.process_command(
-            RESPCommand('SET', ['key', 'value2'])
+            RESPCommand('SET', ['key', 'value2']), mock_writer
         )
 
         # Wait 150ms
         await asyncio.sleep(0.15)
 
         # Key should still exist
-        response = await redis_server.process_command(RESPCommand('GET', ['key']))
+        response = await redis_server.process_command(RESPCommand('GET', ['key']), mock_writer)
         assert response == b"$6\r\nvalue2\r\n"
 
-    async def test_set_px_edge_cases(self, redis_server):
+    async def test_set_px_edge_cases(serf, redis_server, mock_writer):
         """Test edge cases for SET PX"""
         test_cases = [
             ('0', b"-ERR"),  # Zero expiration
@@ -328,7 +328,7 @@ class TestRedisGetSet:
 
         for px_value, expected_response in test_cases:
             command = RESPCommand('SET', ['key', 'value', 'px', px_value])
-            response = await redis_server.process_command(command)
+            response = await redis_server.process_command(command, mock_writer)
             assert response.startswith(expected_response)
 
     @pytest.mark.parametrize("value", [
@@ -339,28 +339,28 @@ class TestRedisGetSet:
         "a" * 1024,  # Large string
         "\r\n\t",  # Control characters
     ])
-    async def test_set_get_various_values(self, redis_server, value):
+    async def test_set_get_various_values(serf, redis_server, mock_writer, value):
         """Test SET/GET with various types of values"""
         # SET the value
         await redis_server.process_command(
-            RESPCommand('SET', ['key', value])
+            RESPCommand('SET', ['key', value]), mock_writer
         )
 
         # GET and verify
         response = await redis_server.process_command(
-            RESPCommand('GET', ['key'])
+            RESPCommand('GET', ['key']), mock_writer
         )
         expected = f"${len(value)}\r\n{value}\r\n".encode()
         assert response == expected
 
-    async def test_concurrent_set_get(self, redis_server):
+    async def test_concurrent_set_get(serf, redis_server, mock_writer):
         """Test concurrent SET/GET operations"""
         async def set_get_sequence(key: str, value: str, px: int):
             await redis_server.process_command(
-                RESPCommand('SET', [key, value, 'px', str(px)])
+                RESPCommand('SET', [key, value, 'px', str(px)]), mock_writer
             )
             return await redis_server.process_command(
-                RESPCommand('GET', [key])
+                RESPCommand('GET', [key]), mock_writer
             )
         # Use longer expiration times to avoid timing issues
         base_expiry = 500  # 500ms base
@@ -391,7 +391,7 @@ class TestRedisGetSet:
         # Check expiration occurred as expected
         for i in range(5):
             response = await redis_server.process_command(
-                RESPCommand('GET', [f'key{i}'])
+                RESPCommand('GET', [f'key{i}']), mock_writer
             )
             if i == 0:  # Only first key should be expired
                 assert response == b"$-1\r\n", f"key{i} should be expired"
@@ -399,11 +399,11 @@ class TestRedisGetSet:
                 expected = f"$6\r\nvalue{i}\r\n".encode()
                 assert response == expected, f"key{i} should still be valid"
 
-    async def test_set_get_after_expiry_race(self, redis_server):
+    async def test_set_get_after_expiry_race(serf, redis_server, mock_writer):
         """Test race condition between SET and expiry"""
         # Set key with very short expiration
         await redis_server.process_command(
-            RESPCommand('SET', ['key', 'value', 'px', '1'])
+            RESPCommand('SET', ['key', 'value', 'px', '1']), mock_writer
         )
 
         # Wait just long enough for potential expiry
@@ -411,12 +411,12 @@ class TestRedisGetSet:
 
         # Quickly SET new value before GET
         await redis_server.process_command(
-            RESPCommand('SET', ['key', 'new_value'])
+            RESPCommand('SET', ['key', 'new_value']), mock_writer
         )
 
         # GET should return new value regardless of previous expiry
         response = await redis_server.process_command(
-            RESPCommand('GET', ['key'])
+            RESPCommand('GET', ['key']), mock_writer
         )
         assert response == b"$9\r\nnew_value\r\n"
 
@@ -435,13 +435,13 @@ class TestConfigGet:
         server = await RedisServer.create(config=config)
         return server
 
-    async def test_config_get_dir(self, redis_server):
+    async def test_config_get_dir(serf, redis_server, mock_writer):
         """Test CONFIG GET dir"""
         command = RESPCommand(
             command='CONFIG',
             args=['GET', 'dir']
         )
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         expected = (
             b"*2\r\n"  # Array of 2 elements
             b"$3\r\n"  # First element length (dir)
@@ -451,13 +451,13 @@ class TestConfigGet:
         )
         assert response == expected
 
-    async def test_config_get_dbfilename(self, redis_server):
+    async def test_config_get_dbfilename(serf, redis_server, mock_writer):
         """Test CONFIG GET dbfilename"""
         command = RESPCommand(
             command='CONFIG',
             args=['GET', 'dbfilename']
         )
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         expected = (
             b"*2\r\n"  # Array of 2 elements
             b"$10\r\n"  # First element length (dbfilename is 10 chars)
@@ -467,13 +467,13 @@ class TestConfigGet:
         )
         assert response == expected
 
-    async def test_config_get_unknown_param(self, redis_server):
+    async def test_config_get_unknown_param(serf, redis_server, mock_writer):
         """Test CONFIG GET with unknown parameter"""
         command = RESPCommand(
             command='CONFIG',
             args=['GET', 'unknown']
         )
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         expected = (
             b"*2\r\n"  # Array of 2 elements
             b"$7\r\n"  # First element length (unknown)
@@ -482,7 +482,7 @@ class TestConfigGet:
         )
         assert response == expected
 
-    async def test_config_get_case_insensitive(self, redis_server):
+    async def test_config_get_case_insensitive(serf, redis_server, mock_writer):
         """Test CONFIG GET is case insensitive"""
         variants = ['DIR', 'dir', 'Dir', 'dIr']
         for variant in variants:
@@ -490,7 +490,7 @@ class TestConfigGet:
                 command='CONFIG',
                 args=['GET', variant]
             )
-            response = await redis_server.process_command(command)
+            response = await redis_server.process_command(command, mock_writer)
             expected = (
                 b"*2\r\n"
                 b"$3\r\n"
@@ -500,22 +500,22 @@ class TestConfigGet:
             )
             assert response == expected
 
-    async def test_config_wrong_subcommand(self, redis_server):
+    async def test_config_wrong_subcommand(serf, redis_server, mock_writer):
         """Test CONFIG with wrong subcommand"""
         command = RESPCommand(
             command='CONFIG',
             args=['INVALID', 'dir']
         )
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR unknown CONFIG subcommand")
 
-    async def test_config_missing_args(self, redis_server):
+    async def test_config_missing_args(serf, redis_server, mock_writer):
         """Test CONFIG with missing arguments"""
         command = RESPCommand(
             command='CONFIG',
             args=[]
         )
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR wrong number of arguments")
 
 
@@ -523,14 +523,14 @@ class TestConfigGet:
 class TestRedisKeys:
     """Test KEYS command functionality"""
 
-    async def test_keys_empty_db(self, redis_server):
+    async def test_keys_empty_db(serf, redis_server, mock_writer):
         """Test KEYS when database is empty"""
         command = RESPCommand(command='KEYS', args=['*'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         expected = b"*0\r\n"  # Empty array
         assert response == expected
 
-    async def test_keys_multiple_entries(self, redis_server):
+    async def test_keys_multiple_entries(serf, redis_server, mock_writer):
         """Test KEYS with multiple entries"""
         # Add some test data
         test_data = [
@@ -541,12 +541,12 @@ class TestRedisKeys:
 
         for key, value in test_data:
             await redis_server.process_command(
-                RESPCommand('SET', [key, value])
+                RESPCommand('SET', [key, value]), mock_writer
             )
 
         # Get all keys
         command = RESPCommand(command='KEYS', args=['*'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
 
         # Expected response with sorted keys
         expected = (
@@ -560,17 +560,17 @@ class TestRedisKeys:
         )
         assert response == expected
 
-    async def test_keys_with_expired(self, redis_server):
+    async def test_keys_with_expired(serf, redis_server, mock_writer):
         """Test KEYS with some expired keys"""
         # Set keys with different expirations
         await redis_server.process_command(
-            RESPCommand('SET', ['key1', 'value1', 'px', '100'])  # Will expire
+            RESPCommand('SET', ['key1', 'value1', 'px', '100']), mock_writer  # Will expire
         )
         await redis_server.process_command(
-            RESPCommand('SET', ['key2', 'value2'])  # No expiration
+            RESPCommand('SET', ['key2', 'value2']), mock_writer  # No expiration
         )
         await redis_server.process_command(
-            RESPCommand('SET', ['key3', 'value3', 'px', '10000'])  # Won't expire yet
+            RESPCommand('SET', ['key3', 'value3', 'px', '10000']) , mock_writer # Won't expire yet
         )
 
         # Wait for first key to expire
@@ -578,7 +578,7 @@ class TestRedisKeys:
 
         # Get all keys
         command = RESPCommand(command='KEYS', args=['*'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
 
         # Expected response (key1 should be gone)
         expected = (
@@ -590,37 +590,37 @@ class TestRedisKeys:
         )
         assert response == expected
 
-    async def test_keys_wrong_args(self, redis_server):
+    async def test_keys_wrong_args(serf, redis_server, mock_writer):
         """Test KEYS with wrong number of arguments"""
         # No arguments
         command = RESPCommand(command='KEYS', args=[])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR wrong number of arguments")
 
         # Too many arguments
         command = RESPCommand(command='KEYS', args=['*', 'extra'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR wrong number of arguments")
 
-    async def test_keys_unsupported_pattern(self, redis_server):
+    async def test_keys_unsupported_pattern(serf, redis_server, mock_writer):
         """Test KEYS with unsupported pattern"""
         command = RESPCommand(command='KEYS', args=['key*'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
         assert response.startswith(b"-ERR only \"*\" pattern is supported")
 
-    async def test_keys_after_delete(self, redis_server):
+    async def test_keys_after_delete(serf, redis_server, mock_writer):
         """Test KEYS after deleting some keys"""
         # Set multiple keys
-        await redis_server.process_command(RESPCommand('SET', ['key1', 'value1']))
-        await redis_server.process_command(RESPCommand('SET', ['key2', 'value2']))
-        await redis_server.process_command(RESPCommand('SET', ['key3', 'value3']))
+        await redis_server.process_command(RESPCommand('SET', ['key1', 'value1']), mock_writer)
+        await redis_server.process_command(RESPCommand('SET', ['key2', 'value2']), mock_writer)
+        await redis_server.process_command(RESPCommand('SET', ['key3', 'value3']), mock_writer)
 
         # Delete one key
-        await redis_server.process_command(RESPCommand('DEL', ['key2']))
+        await redis_server.process_command(RESPCommand('DEL', ['key2']), mock_writer)
 
         # Get all keys
         command = RESPCommand(command='KEYS', args=['*'])
-        response = await redis_server.process_command(command)
+        response = await redis_server.process_command(command, mock_writer)
 
         # Expected response (key2 should be gone)
         expected = (
@@ -631,3 +631,74 @@ class TestRedisKeys:
             b"key3\r\n"
         )
         assert response == expected
+
+
+@pytest.mark.asyncio
+class TestReplicationCommands:
+    """Test replication-related Redis commands"""
+
+    async def test_wait_command_basic(self, redis_server, mock_writer):
+        """Test basic WAIT command functionality"""
+        # Add a replica
+        await redis_server.master.add_replica(mock_writer)
+
+        # Calculate command bytes for SET command
+        set_cmd = RESPCommand('SET', ['key', 'value'])
+        await redis_server.process_command(set_cmd, mock_writer)
+
+        # Get the current offset after SET command
+        current_offset = redis_server.master.backlog_offset + len(redis_server.master.replication_backlog)
+
+        # Test WAIT command
+        command = RESPCommand('WAIT', ['1', '1000'])  # Wait for 1 replica, 1000ms timeout
+        response = await redis_server.process_command(command, mock_writer)
+
+        # Should initially return 0 as replica hasn't acknowledged
+        assert response == b":0\r\n"
+
+        # Simulate replica acknowledgment with the correct offset
+        replica_id = f"{mock_writer.get_extra_info('peername')[0]}:{mock_writer.get_extra_info('peername')[1]}"
+        await redis_server.master.process_ack(replica_id, str(current_offset))
+
+        # Try WAIT again
+        response = await redis_server.process_command(command, mock_writer)
+        assert response == b":1\r\n"
+
+    async def test_wait_command_timeout(self, redis_server, mock_writer):
+        """Test WAIT command with timeout"""
+        await redis_server.master.add_replica(mock_writer)
+
+        # Set data and immediately try to wait with short timeout
+        await redis_server.process_command(RESPCommand('SET', ['key', 'value']), mock_writer)
+        command = RESPCommand('WAIT', ['1', '100'])  # 100ms timeout
+
+        response = await redis_server.process_command(command, mock_writer)
+        assert response == b":0\r\n"  # Should timeout and return 0
+
+    async def test_replconf_ack_handling(self, redis_server, mock_writer):
+        """Test handling of REPLCONF ACK command"""
+        await redis_server.master.add_replica(mock_writer)
+
+        # Simulate REPLCONF ACK command
+        command = RESPCommand('REPLCONF', ['ACK', '100'])
+        response = await redis_server.process_command(command, mock_writer)
+        assert response == b"+OK\r\n"
+
+        # Verify offset was updated
+        replica_id = f"{mock_writer.get_extra_info('peername')[0]}:{mock_writer.get_extra_info('peername')[1]}"
+        assert redis_server.master.replica_offsets[replica_id] == 100
+
+    async def test_invalid_replconf_commands(self, redis_server, mock_writer):
+        """Test invalid REPLCONF command handling"""
+        test_cases = [
+            (RESPCommand('REPLCONF', []), "wrong number of arguments for REPLCONF"),
+            (RESPCommand('REPLCONF', ['INVALID']), "unknown REPLCONF subcommand invalid"),
+            (RESPCommand('REPLCONF', ['ACK']), "wrong number of arguments for REPLCONF ACK"),
+            (RESPCommand('REPLCONF', ['ACK', 'invalid']), None),  # Should handle invalid offset gracefully
+        ]
+
+        for command, error_message in test_cases:
+            response = await redis_server.process_command(command, mock_writer)
+            if error_message:
+                assert response.startswith(b"-ERR")
+                assert error_message.encode() in response

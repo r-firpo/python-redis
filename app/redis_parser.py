@@ -79,6 +79,13 @@ class RESPParser:
                     command=elements[0].upper(),
                     args=elements[1:]
                 )
+            elif first_byte == b'+':  # Simple string response (OK, PONG, etc)
+                # Just read and ignore simple string responses
+                await reader.readline()  # Read and discard the rest of the line
+                return None
+            elif first_byte == b'-':  # Error response
+                await reader.readline()  # Read and discard the error
+                return None
 
             else:
                 raise ValueError(f"Unexpected message type: {first_byte}")

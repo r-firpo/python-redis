@@ -269,7 +269,6 @@ class ReplicationManager:
         while True:
             try:
                 await self.connect_to_master()
-                # TODO: Implement full replication logic here
                 await asyncio.sleep(1)  # Prevent tight loop
             except Exception as e:
                 logger.error(f"Replication error: {e}")

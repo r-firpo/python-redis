@@ -178,6 +178,14 @@ class RedisServer:
                             return self.protocol.encode_error('wrong number of arguments for REPLCONF capa')
                         return self.protocol.encode_simple_string('OK')
 
+                    elif subcmd == 'ack':
+                        if len(args) != 2:
+                            return self.protocol.encode_error('wrong number of arguments for REPLCONF ACK')
+                        peer = writer.get_extra_info('peername')
+                        replica_id = f"{peer[0]}:{peer[1]}"
+                        await self.master.process_ack(replica_id, args[1])
+                        return self.protocol.encode_simple_string('OK')
+
                     else:
                         return self.protocol.encode_error(f'unknown REPLCONF subcommand {subcmd}')
 
@@ -362,91 +370,26 @@ class RedisServer:
                 except ValueError:
                     return self.protocol.encode_error('value is not an integer or out of range')
 
-                # Check if we're a replica
-                if not self.master:
-                    # On replica, WAIT always returns 0 immediately
+                if not hasattr(self, 'master') or not self.master:
                     return self.protocol.encode_integer(0)
 
-                # Otherwise, handle as master
-                ack_count = await self._wait_for_replicas(numreplicas, timeout)
-                logger.info(f"Returning {ack_count} replicas for WAIT command")
+                # If no writes have occurred yet, return numreplicas
+                if len(self.master.replication_backlog) == 0:
+                    return self.protocol.encode_integer(len(self.master.replicas))
+
+                # Calculate current offset
+                current_offset = self.master.backlog_offset + len(self.master.replication_backlog)
+
+                # Convert timeout to seconds (0 means no timeout)
+                wait_timeout = None if timeout == 0 else timeout / 1000.0
+
+                # Wait for replicas
+                ack_count = await self.master.wait_for_replicas(numreplicas, current_offset, wait_timeout)
+                logger.info(f"WAIT command returning {ack_count} replicas")
                 return self.protocol.encode_integer(ack_count)
 
         except Exception as e:
             return self.protocol.encode_error(str(e))
-
-    async def _wait_for_replicas(self, numreplicas: int, timeout: int) -> int:
-        """
-        Wait for specified number of replicas to acknowledge all writes.
-        Returns the number of replicas that acknowledged the writes.
-        """
-        if not self.master or not self.master.replicas:
-            # If this instance is not a master or replication is not configured
-            return 0
-
-        if timeout == 0:
-            # Block forever
-            wait_time = None
-        else:
-            wait_time = timeout / 1000.0  # Convert milliseconds to seconds
-
-        try:
-            # Get current offset
-            current_offset = self.master.backlog_offset + len(self.master.replication_backlog)
-
-            # Create set to track replicas that have caught up
-            caught_up_replicas: Set[str] = set()
-
-            # Check which replicas are already caught up
-            for replica_id, replica_info in self.master.replicas.items():
-                if replica_info.offset >= current_offset:
-                    caught_up_replicas.add(replica_id)
-
-            # If we already have enough replicas, return immediately
-            if len(caught_up_replicas) >= numreplicas:
-                return len(caught_up_replicas)
-
-            # Create condition to wait for replica acknowledgments
-            condition = asyncio.Condition()
-
-            # Register callback for replica acknowledgments
-            async def check_acks(replica_id: str, offset: int):
-                if offset >= current_offset:
-                    caught_up_replicas.add(replica_id)
-                    async with condition:
-                        condition.notify_all()
-
-            # Register callback for all replicas
-            callbacks = {}
-            for replica_id, replica_info in self.master.replicas.items():
-                if replica_id not in caught_up_replicas:
-                    callbacks[replica_id] = check_acks
-
-            # Add callbacks to master
-            self.master.ack_callbacks.update(callbacks)
-
-            try:
-                # Wait for condition with timeout
-                async with condition:
-                    await asyncio.wait_for(
-                        condition.wait_for(
-                            lambda: len(caught_up_replicas) >= numreplicas
-                        ),
-                        timeout=wait_time
-                    )
-            except asyncio.TimeoutError:
-                # Timeout reached, return current count
-                pass
-            finally:
-                # Remove callbacks
-                for replica_id in callbacks:
-                    self.master.ack_callbacks.pop(replica_id, None)
-
-            return len(caught_up_replicas)
-
-        except Exception as e:
-            logger.error(f"Error in wait_for_replicas: {e}")
-            return 0
 
     async def monitor_connections(self):
         """Monitor active connections and their status"""
